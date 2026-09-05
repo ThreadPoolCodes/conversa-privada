@@ -943,6 +943,29 @@ body::before {
 .center-state svg { width: 34px; height: 34px; opacity: 0.6; }
 .center-state p { margin: 0; line-height: 1.5; }
 
+/* Indicador de "carregando mensagens anteriores": flutua sobre o topo da área
+   de mensagens (fora do fluxo, igual ao botão de ir-pra-base) enquanto a
+   paginação pra trás busca o próximo lote - assim aparecer/sumir não empurra o
+   conteúdo nem causa "pulo" no scroll (ver loadOlderMessages). */
+.loading-older {
+  position: absolute;
+  top: calc(64px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow-2);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .spin-dot {
   width: 8px;
   height: 8px;

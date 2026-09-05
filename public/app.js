@@ -58,6 +58,7 @@
   const loveClose = document.getElementById('love-close');
   const konamiHeart = document.getElementById('konami-heart');
   const loadingState = document.getElementById('loading-state');
+  const loadingOlderEl = document.getElementById('loading-older');
   const emptyState = document.getElementById('empty-state');
   const toastEl = document.getElementById('toast');
   const presenceDotEl = document.querySelector('.chat-header .dot');
@@ -431,7 +432,11 @@
     konamiHandleToken(zone, now);
   }, { passive: true });
 
-  function resetMessagesView() {
+  // Só limpa o DOM das mensagens e o estado forward-only de renderização
+  // (agrupamento, lados, divisórias de data). NÃO mexe em loadedMessages nem
+  // na barra de resposta - é o que loadOlderMessages usa antes de re-renderizar
+  // a lista inteira a partir de loadedMessages.
+  function clearRenderedRows() {
     messagesEl.querySelectorAll('.msg-row, .date-divider').forEach((el) => el.remove());
     renderedIds = new Set();
     authorSide = new Map();
@@ -439,6 +444,12 @@
     lastSender = null;
     lastTs = null;
     lastDateKey = null;
+  }
+
+  function resetMessagesView() {
+    clearRenderedRows();
+    loadedMessages = [];
+    hasMoreOlder = false;
     clearReplyingTo();
     updateEmptyState();
     updateScrollBtn();
@@ -452,6 +463,22 @@
 
   let renderedIds = new Set();
   let es = null;
+
+  // Paginação "mais recentes primeiro": na abertura só as PAGE_SIZE mensagens
+  // mais novas descem do servidor; lotes anteriores são buscados conforme a
+  // pessoa rola pra cima (loadOlderMessages). loadedMessages é a lista
+  // autoritativa em ordem ascendente do que já foi carregado - ao paginar pra
+  // trás re-renderizamos tudo a partir dela (o agrupamento/data-divider é um
+  // passo forward-only, prepender no DOM quebraria o estado). Mensagens novas
+  // continuam só dando append normal, sem re-render.
+  const PAGE_SIZE = 50;
+  let loadedMessages = [];
+  let hasMoreOlder = false;
+  let loadingOlder = false;
+  // Fica false durante a janela barulhenta da carga inicial (render + scroll
+  // pra base + imagens assentando) pra não disparar paginação pra trás sem a
+  // pessoa ter rolado. Volta a true poucos frames depois.
+  let messagesReady = false;
 
   // Tracks the previously-rendered row/sender/time so consecutive messages
   // from the same author can be visually grouped (tighter spacing, avatar/
@@ -1051,12 +1078,38 @@
   // render. Nudge the scroll position down again as things settle so we
   // reliably land on the very last message instead of stopping wherever the
   // layout happened to be at that instant.
-  function scrollToBottomWhenReady() {
+  // opts.pin: cola a base de forma mais teimosa por ~0,8s (ou até a pessoa
+  // tocar/rolar), ignorando o isNearBottom(). Usado só na carga inicial - aí
+  // a pessoa quer a última mensagem, e mídia antiga sem width/height salvos
+  // reflui depois do render e empurra a base pra longe justo quando o
+  // isNearBottom() passa a dar false, deixando a abertura "quase no fim".
+  function scrollToBottomWhenReady(opts) {
+    const pin = !!(opts && opts.pin);
     scrollToBottom();
     requestAnimationFrame(() => {
       scrollToBottom();
       requestAnimationFrame(scrollToBottom);
     });
+    if (pin) {
+      let cancelled = false;
+      const cancel = () => {
+        cancelled = true;
+        messagesEl.removeEventListener('wheel', cancel);
+        messagesEl.removeEventListener('touchstart', cancel);
+        messagesEl.removeEventListener('keydown', cancel);
+      };
+      messagesEl.addEventListener('wheel', cancel, { once: true, passive: true });
+      messagesEl.addEventListener('touchstart', cancel, { once: true, passive: true });
+      messagesEl.addEventListener('keydown', cancel, { once: true });
+      const start = Date.now();
+      const tick = () => {
+        if (cancelled) return;
+        scrollToBottom();
+        if (Date.now() - start < 800) setTimeout(tick, 55);
+        else cancel();
+      };
+      setTimeout(tick, 55);
+    }
     // Media that already has width/height reserved (see readMediaDimensions/
     // renderMessage) doesn't reflow when it finishes loading, so most of
     // these listeners now simply never fire in practice. They're still
@@ -1103,6 +1156,15 @@
     scrollBottomBtn.classList.toggle('hidden', isNearBottom());
   }
   messagesEl.addEventListener('scroll', updateScrollBtn);
+  // Rolou pra cima, perto do topo, e ainda há histórico → puxa o lote anterior.
+  // Só depois que a carga inicial assentou (messagesReady) e desde que a pessoa
+  // NÃO esteja colada na base - a abertura sempre termina colada na base, e a
+  // reflow do spinner/imagens durante o primeiro paint não deve disparar isso.
+  messagesEl.addEventListener('scroll', () => {
+    if (!messagesReady || loadingOlder || !hasMoreOlder) return;
+    if (isNearBottom()) return;
+    if (messagesEl.scrollTop < 300) loadOlderMessages();
+  });
   scrollBottomBtn.addEventListener('click', () => {
     messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
   });
@@ -1143,20 +1205,92 @@
   window.addEventListener('orientationchange', () => setTimeout(syncViewportHeight, 60));
 
   async function loadMessages() {
+    messagesReady = false;
     loadingState.classList.remove('hidden');
     emptyState.classList.add('hidden');
     try {
-      const res = await fetch(api('/api/messages'));
+      const res = await fetch(api(`/api/messages?limit=${PAGE_SIZE}`));
       if (!res.ok) return;
-      const { messages } = await res.json();
+      const { messages, hasMore } = await res.json();
       resetMessagesView();
+      loadedMessages = messages.slice();
+      hasMoreOlder = !!hasMore;
       messages.forEach(renderMessage);
-      scrollToBottomWhenReady();
+      scrollToBottomWhenReady({ pin: true });
       updateScrollBtn();
+      // Libera a paginação por scroll só depois que o layout inicial assentou.
+      requestAnimationFrame(() => requestAnimationFrame(() => { messagesReady = true; }));
     } finally {
       loadingState.classList.add('hidden');
       updateEmptyState();
     }
+  }
+
+  // Primeira .msg-row pelo menos parcialmente visível - a âncora usada pra
+  // manter a posição de leitura estável quando a lista é re-renderizada.
+  function firstVisibleRow() {
+    const top = messagesEl.getBoundingClientRect().top;
+    const rows = messagesEl.querySelectorAll('.msg-row');
+    for (const r of rows) {
+      if (r.getBoundingClientRect().bottom > top + 1) return r;
+    }
+    return rows[rows.length - 1] || null;
+  }
+
+  // Busca o lote imediatamente anterior ao que já está carregado e re-renderiza
+  // a lista inteira a partir de loadedMessages (ver comentário na declaração de
+  // loadedMessages). Preserva a posição de leitura ancorando na primeira
+  // mensagem visível: mede onde ela está na viewport antes, e depois do
+  // re-render corrige o scroll pra ela voltar exatamente pro mesmo lugar -
+  // robusto mesmo se o conteúdo prependido sofrer reflow.
+  async function loadOlderMessages() {
+    if (loadingOlder || !hasMoreOlder || !loadedMessages.length) return;
+    loadingOlder = true;
+    loadingOlderEl.classList.remove('hidden');
+    let older, hasMore;
+    try {
+      const before = loadedMessages[0].id;
+      const res = await fetch(api(`/api/messages?limit=${PAGE_SIZE}&before=${encodeURIComponent(before)}`));
+      if (!res.ok) return;
+      ({ messages: older, hasMore } = await res.json());
+    } finally {
+      loadingOlderEl.classList.add('hidden');
+      loadingOlder = false;
+    }
+    if (!older || !older.length) {
+      hasMoreOlder = false;
+      return;
+    }
+    const anchor = firstVisibleRow();
+    const anchorId = anchor && anchor.dataset.id;
+    const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
+
+    loadedMessages = older.concat(loadedMessages);
+    hasMoreOlder = !!hasMore;
+    clearRenderedRows();
+    loadedMessages.forEach(renderMessage);
+
+    const newAnchor = anchorId
+      ? messagesEl.querySelector(`.msg-row[data-id="${anchorId}"]`)
+      : null;
+    if (newAnchor) {
+      // Assinala o scroll em absoluto (zera → mede a âncora nessa base → posiciona)
+      // em vez de "+=", pra não depender de onde o navegador deixou o scrollTop
+      // depois do teardown/re-render nem do scroll-anchoring dele.
+      messagesEl.scrollTop = 0;
+      messagesEl.scrollTop = newAnchor.getBoundingClientRect().top - anchorTop;
+    }
+    updateScrollBtn();
+    updateEmptyState();
+  }
+
+  // Aplica uma alteração ao item correspondente em loadedMessages (a lista
+  // autoritativa), pra que um re-render disparado por loadOlderMessages não
+  // reverta patches que só tinham sido aplicados no DOM (apagada, preview de
+  // link, visualização única aberta).
+  function patchLoadedMessage(id, patch) {
+    const m = loadedMessages.find((x) => x.id === id);
+    if (m) Object.assign(m, patch);
   }
 
   function connectStream() {
@@ -1181,6 +1315,7 @@
     });
     es.addEventListener('message-updated', (evt) => {
       const { id, linkPreview } = JSON.parse(evt.data);
+      patchLoadedMessage(id, { linkPreview });
       applyLinkPreview(id, linkPreview);
     });
     es.addEventListener('message', (evt) => {
@@ -1190,6 +1325,7 @@
       // get the floating button to jump down whenever they want.
       const wasNearBottom = isNearBottom();
       const m = JSON.parse(evt.data);
+      loadedMessages.push(m);
       renderMessage(m, { animate: true });
       if (wasNearBottom) {
         scrollToBottomWhenReady();
@@ -1202,13 +1338,15 @@
     });
     es.addEventListener('message-deleted', (evt) => {
       const { id, expiredEphemeral, deletedBy } = JSON.parse(evt.data);
+      patchLoadedMessage(id, { deleted: true, deletedBy, expiredEphemeral: !!expiredEphemeral });
       applyDeletedPlaceholder(id, expiredEphemeral, deletedBy);
     });
     // The other person opened a view-once photo/video I sent - just a
     // label update (locked → "Aberto"); the media itself never reaches
     // this client, only whoever actually called .../view gets it.
     es.addEventListener('message-viewed', (evt) => {
-      const { id } = JSON.parse(evt.data);
+      const { id, viewedAt } = JSON.parse(evt.data);
+      patchLoadedMessage(id, { viewedAt: viewedAt || Date.now() });
       const row = messagesEl.querySelector(`[data-id="${id}"]`);
       const label = row && row.querySelector('.ephemeral-locked .ephemeral-label');
       if (label) label.textContent = 'Aberto';

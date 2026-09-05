@@ -401,10 +401,35 @@ function buildReplySnapshot(data, replyToId) {
   return { id: original.id, sender: original.sender, snippet };
 }
 
+// Paginação "mais recentes primeiro": sem parâmetros, devolve só o último
+// lote (as PAGE_SIZE mensagens mais novas); com ?before=<id> devolve o lote
+// imediatamente anterior a essa mensagem. O array no store já está em ordem
+// cronológica, então é só fatiar. A ordem de retorno continua ascendente
+// (mais antiga → mais nova) pra não mudar o contrato do renderMessage no
+// front. hasMore avisa se ainda existe histórico antes do início do lote.
+const MESSAGES_PAGE_DEFAULT = 50;
+const MESSAGES_PAGE_MAX = 200;
+
 roomRouter.get('/api/messages', requireAuth, (req, res) => {
   try {
     const data = loadWithSessionKey(req);
-    res.json({ messages: data.messages.map(sanitizeMessage) });
+    const all = data.messages;
+
+    let limit = parseInt(req.query.limit, 10);
+    if (!Number.isFinite(limit) || limit <= 0) limit = MESSAGES_PAGE_DEFAULT;
+    limit = Math.min(limit, MESSAGES_PAGE_MAX);
+
+    let end = all.length;
+    if (req.query.before) {
+      const idx = all.findIndex((m) => m.id === String(req.query.before));
+      // Cursor desconhecido (mensagem apagada do array? nunca acontece hoje,
+      // mas seja defensivo) → trata como se não tivesse cursor.
+      if (idx !== -1) end = idx;
+    }
+    const start = Math.max(0, end - limit);
+    const slice = all.slice(start, end);
+
+    res.json({ messages: slice.map(sanitizeMessage), hasMore: start > 0 });
   } catch (e) {
     res.status(401).json({ error: 'unauthenticated' });
   }
