@@ -67,6 +67,11 @@
   const replyBarSnippet = document.getElementById('reply-bar-snippet');
   const replyBarCancel = document.getElementById('reply-bar-cancel');
   const scrollBottomBtn = document.getElementById('scroll-bottom-btn');
+  const msgMenu = document.getElementById('msg-menu');
+  const msgMenuBackdrop = document.getElementById('msg-menu-backdrop');
+  const msgMenuReplyBtn = document.getElementById('msg-menu-reply');
+  const msgMenuCopyBtn = document.getElementById('msg-menu-copy');
+  const msgMenuDelBtn = document.getElementById('msg-menu-delete');
 
   // The access code field is masked via -webkit-text-security instead of
   // type="password" (see style.css for why: it's the one lever left
@@ -216,6 +221,197 @@
       confirmOk.addEventListener('click', onOk);
     });
   }
+
+  // ---------------------------------------------------------------------
+  // Menu de contexto da mensagem (Responder / Copiar / Apagar)
+  //
+  // Antes cada balão carregava dois botõezinhos fixos embaixo dele - o jeito
+  // mais rápido de um chat na web parecer página, não app. Agora as mesmas
+  // ações vivem num menuzinho flutuante, aberto pelo gesto nativo de cada
+  // plataforma:
+  //   - mouse/desktop: clique direito (evento 'contextmenu') no balão;
+  //   - toque:         toque longo (~480ms) no balão.
+  // Os dois abrem exatamente o mesmo #msg-menu. O id da mensagem sai do
+  // dataset.id da .msg-row; o objeto completo (que setReplyingTo/Copiar
+  // precisam) é recuperado de loadedMessages. "Copiar" só aparece em
+  // mensagem de texto.
+  // ---------------------------------------------------------------------
+  const LONG_PRESS_MS = 480;
+  const LONG_PRESS_MOVE_TOL = 10; // px de folga antes de virar "isso é scroll"
+
+  let activeMenuMsgId = null;
+
+  function onMenuKey(e) {
+    if (e.key === 'Escape') closeMessageMenu();
+  }
+
+  function openMessageMenu(id, at) {
+    const m = loadedMessages.find((x) => x.id === id);
+    if (!m || m.deleted) return;
+    // Re-disparo em cima do mesmo balão (alguns Android disparam 'contextmenu'
+    // E o nosso timer de toque longo quase juntos): não reposiciona, ignora.
+    if (activeMenuMsgId === id) return;
+    closeMessageMenu();
+    activeMenuMsgId = id;
+
+    // "Copiar" só faz sentido em texto.
+    msgMenuCopyBtn.classList.toggle('hidden', m.type !== 'text' || !m.text);
+
+    // Mostra antes de medir (offsetWidth/Height só valem com o elemento no
+    // fluxo). A leitura de offsetWidth logo abaixo também força um reflow, o
+    // que faz a transição de entrada (.is-in) animar de verdade.
+    msgMenuBackdrop.classList.remove('hidden');
+    msgMenu.classList.remove('hidden');
+
+    const mw = msgMenu.offsetWidth;
+    const mh = msgMenu.offsetHeight;
+    const vv = window.visualViewport;
+    const vw = (vv && vv.width) || window.innerWidth;
+    const vh = (vv && vv.height) || window.innerHeight;
+    const offX = vv ? vv.offsetLeft : 0;
+    const offY = vv ? vv.offsetTop : 0;
+    const pad = 8;
+
+    // Ponto de origem: coords do clique (clique direito) ou o topo-esquerdo
+    // logo abaixo do balão (toque longo).
+    let x = at.point ? at.point.x : at.rect.left;
+    let y = at.point ? at.point.y : at.rect.bottom + 4;
+
+    // Estourou embaixo → abre pra cima (acima do balão, se veio de rect).
+    if (y + mh + pad > offY + vh) {
+      y = at.rect ? at.rect.top - mh - 4 : y - mh;
+    }
+    // Trava nas bordas da viewport visível (teclado/curva incluídos).
+    x = Math.max(offX + pad, Math.min(x, offX + vw - mw - pad));
+    y = Math.max(offY + pad, Math.min(y, offY + vh - mh - pad));
+
+    msgMenu.style.left = `${x}px`;
+    msgMenu.style.top = `${y}px`;
+    msgMenu.classList.add('is-in');
+
+    document.addEventListener('keydown', onMenuKey);
+    messagesEl.addEventListener('scroll', closeMessageMenu, { passive: true });
+    window.addEventListener('resize', closeMessageMenu);
+    if (vv) vv.addEventListener('resize', closeMessageMenu);
+  }
+
+  function closeMessageMenu() {
+    if (activeMenuMsgId === null) return;
+    activeMenuMsgId = null;
+    msgMenu.classList.add('hidden');
+    msgMenu.classList.remove('is-in');
+    msgMenuBackdrop.classList.add('hidden');
+    document.removeEventListener('keydown', onMenuKey);
+    messagesEl.removeEventListener('scroll', closeMessageMenu);
+    window.removeEventListener('resize', closeMessageMenu);
+    if (window.visualViewport) window.visualViewport.removeEventListener('resize', closeMessageMenu);
+  }
+
+  msgMenuBackdrop.addEventListener('click', closeMessageMenu);
+  // Um segundo clique direito (agora sobre o backdrop) fecha em vez de reabrir
+  // o menu nativo do navegador.
+  msgMenuBackdrop.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    closeMessageMenu();
+  });
+  // Clique direito em cima do próprio menu não abre o menu nativo do browser.
+  msgMenu.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  msgMenuReplyBtn.addEventListener('click', () => {
+    const m = loadedMessages.find((x) => x.id === activeMenuMsgId);
+    closeMessageMenu();
+    if (m) setReplyingTo(m);
+  });
+  msgMenuCopyBtn.addEventListener('click', () => {
+    const m = loadedMessages.find((x) => x.id === activeMenuMsgId);
+    closeMessageMenu();
+    if (!m || !m.text) return;
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      toast('Cópia não suportada neste navegador.');
+      return;
+    }
+    navigator.clipboard.writeText(m.text)
+      .then(() => toast('Mensagem copiada.'))
+      .catch(() => toast('Não foi possível copiar.'));
+  });
+  msgMenuDelBtn.addEventListener('click', () => {
+    const id = activeMenuMsgId;
+    closeMessageMenu();           // fecha antes: askConfirm assume a tela
+    if (id) handleDeleteClick(id);
+  });
+
+  // ---- gatilho 1: clique direito (desktop / mouse) ----
+  messagesEl.addEventListener('contextmenu', (e) => {
+    const bubble = e.target.closest('.bubble');
+    if (!bubble || bubble.classList.contains('deleted')) return;
+    const row = bubble.closest('.msg-row');
+    if (!row) return;
+    e.preventDefault();
+    cancelLongPress();
+    openMessageMenu(row.dataset.id, { point: { x: e.clientX, y: e.clientY } });
+  });
+
+  // ---- gatilho 2: toque longo ----
+  // Timer que dispara sozinho se o dedo ficar ~480ms parado sobre o balão.
+  // Cancela em movimento > tolerância, pointerup/cancel e scroll da lista.
+  // Ao disparar: vibra de leve, abre o menu ancorado no balão e "engole" o
+  // click sintético seguinte pra não abrir lightbox/arquivo/ephemeral nem
+  // rodar o blur-de-fundo.
+  let lpTimer = null;
+  let lpStartX = 0;
+  let lpStartY = 0;
+  let suppressClickUntil = 0;
+
+  function cancelLongPress() {
+    if (lpTimer !== null) {
+      clearTimeout(lpTimer);
+      lpTimer = null;
+    }
+  }
+
+  messagesEl.addEventListener('pointerdown', (e) => {
+    if (e.button && e.button !== 0) return;          // ignora botão direito/meio
+    const bubble = e.target.closest('.bubble');
+    if (!bubble || bubble.classList.contains('deleted')) return;
+    if (e.target.closest('audio, video')) return;    // controles nativos precisam do gesto
+    const row = bubble.closest('.msg-row');
+    if (!row) return;
+    lpStartX = e.clientX;
+    lpStartY = e.clientY;
+    cancelLongPress();
+    lpTimer = setTimeout(() => {
+      lpTimer = null;
+      if (navigator.vibrate) navigator.vibrate(8);
+      suppressClickUntil = Date.now() + 700;
+      openMessageMenu(row.dataset.id, {
+        rect: bubble.getBoundingClientRect(),
+        point: { x: lpStartX, y: lpStartY },
+      });
+    }, LONG_PRESS_MS);
+  }, { passive: true });
+
+  messagesEl.addEventListener('pointermove', (e) => {
+    if (lpTimer === null) return;
+    if (Math.abs(e.clientX - lpStartX) > LONG_PRESS_MOVE_TOL ||
+        Math.abs(e.clientY - lpStartY) > LONG_PRESS_MOVE_TOL) {
+      cancelLongPress();
+    }
+  }, { passive: true });
+
+  messagesEl.addEventListener('pointerup', cancelLongPress, { passive: true });
+  messagesEl.addEventListener('pointercancel', cancelLongPress, { passive: true });
+  messagesEl.addEventListener('scroll', cancelLongPress, { passive: true });
+
+  // Captura: roda ANTES dos handlers de click do img (lightbox), do
+  // file-bubble (window.open), do ephemeral (openEphemeralMessage) e do
+  // blur-de-fundo em #messages. Se o click é o fantasma logo depois de um
+  // toque longo, mata ele aqui.
+  messagesEl.addEventListener('click', (e) => {
+    if (Date.now() < suppressClickUntil && e.target.closest('.bubble')) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, true);
 
   // Secret "você me ama?" counter. Typing (and sending) a variant of that
   // question doesn't post a real message - it's intercepted client-side
@@ -451,6 +647,7 @@
     loadedMessages = [];
     hasMoreOlder = false;
     clearReplyingTo();
+    closeMessageMenu();
     updateEmptyState();
     updateScrollBtn();
   }
@@ -976,35 +1173,10 @@
     }
     body.appendChild(bubble);
 
-    if (!m.deleted) {
-      const actions = document.createElement('div');
-      actions.className = 'msg-actions';
-
-      const replyBtn = document.createElement('button');
-      replyBtn.type = 'button';
-      replyBtn.className = 'msg-action-btn';
-      replyBtn.title = 'Responder';
-      replyBtn.setAttribute('aria-label', 'Responder');
-      replyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6 4 11l5 5"/><path d="M4 11h9a6 6 0 0 1 6 6v1.5"/></svg>';
-      replyBtn.addEventListener('click', () => setReplyingTo(m));
-      actions.appendChild(replyBtn);
-
-      // Either person can delete either message (2-person private chat,
-      // server enforces the same rule - see server.js) - not gated on
-      // identity at all anymore. The deleted placeholder shows who actually
-      // did it (applyDeletedPlaceholder), so this stays transparent even
-      // though it's no longer restricted to "only the original sender".
-      const delBtn = document.createElement('button');
-      delBtn.type = 'button';
-      delBtn.className = 'msg-action-btn is-danger';
-      delBtn.title = 'Apagar';
-      delBtn.setAttribute('aria-label', 'Apagar mensagem');
-      delBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14"/><path d="M7 7l.8 12.1a2 2 0 0 0 2 1.9h4.4a2 2 0 0 0 2-1.9L17 7"/><path d="M9.5 7V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v2"/></svg>';
-      delBtn.addEventListener('click', () => handleDeleteClick(m.id));
-      actions.appendChild(delBtn);
-
-      body.appendChild(actions);
-    }
+    // As ações da mensagem (Responder / Copiar / Apagar) não vivem mais como
+    // botões fixos embaixo do balão - agora saem no #msg-menu, aberto por
+    // clique direito (desktop) ou toque longo (touch). Ver a seção "menu de
+    // contexto da mensagem" mais acima.
 
     line.appendChild(body);
     row.appendChild(line);
@@ -1028,6 +1200,10 @@
   function applyDeletedPlaceholder(id, expiredEphemeral, deletedBy) {
     const row = messagesEl.querySelector(`[data-id="${id}"]`);
     if (!row) return;
+    // Se o menu de contexto estava aberto pra esta mensagem quando a exclusão
+    // chegou pelo SSE, fecha - não faz sentido "Responder/Copiar/Apagar" um
+    // balão que virou "mensagem apagada".
+    if (activeMenuMsgId === id) closeMessageMenu();
     const bubble = row.querySelector('.bubble');
     if (bubble) {
       // Grab whatever time text is already showing (works whether this
@@ -1051,8 +1227,6 @@
         bubble.appendChild(timeEl);
       }
     }
-    const actions = row.querySelector('.msg-actions');
-    if (actions) actions.remove();
   }
 
   function openLightbox(kind, src) {

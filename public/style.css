@@ -453,6 +453,13 @@ body::before {
      this is just enough to lift a bubble off the page background, not a
      drop shadow anyone should consciously notice. */
   box-shadow: 0 0.5px 0 rgba(0,0,0,0.14);
+  /* Toque longo sobre o balão abre o menu de contexto (Responder/Copiar/
+     Apagar), então o balão não pode iniciar seleção de texto nem o callout
+     nativo do iOS - mesmo comportamento do WhatsApp/Telegram, onde segurar
+     uma mensagem nunca seleciona o texto (copiar é item do menu). */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 /* .msg-time floats inside the bubble (see below) so the last line of text
    wraps around it, WhatsApp-style, instead of sitting on its own line
@@ -576,6 +583,7 @@ body::before {
   display: block;
   cursor: pointer;
   transition: filter .1s ease;
+  -webkit-touch-callout: none; /* mata o "Salvar imagem" do iOS no toque longo */
 }
 .bubble img:active, .bubble video:active { filter: brightness(0.85); }
 
@@ -693,42 +701,6 @@ body::before {
 .ephemeral-icon svg { width: 18px; height: 18px; }
 .ephemeral-label { font-size: 15px; flex: 1; }
 .bubble.ephemeral-locked .msg-time { margin-left: 8px; }
-
-.msg-actions {
-  display: flex;
-  gap: 2px;
-  margin: 1px -6px 0;
-}
-
-/* Small icon buttons, not underlined text links - a permanent "reply |
-   delete" hyperlink under every bubble is the fastest way for a chat UI to
-   read as a web page instead of an app. Padding pads out the real tap
-   target well past the visible 14px icon without inflating the layout. */
-.msg-action-btn {
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 7px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0.6;
-  -webkit-appearance: none;
-  appearance: none;
-  -webkit-user-select: none;
-  user-select: none;
-  -webkit-touch-callout: none;
-  touch-action: manipulation;
-  transition: opacity .12s ease, background-color .12s ease, transform .1s cubic-bezier(.32,.72,0,1), color .12s ease;
-}
-.msg-action-btn svg { width: 14px; height: 14px; }
-
-.msg-action-btn:hover { opacity: 1; color: var(--ink); background: rgba(255,255,255,0.06); }
-.msg-action-btn:active { opacity: 1; transform: scale(0.88); background: rgba(255,255,255,0.1); }
-.msg-action-btn.is-danger:hover { color: var(--danger); }
-.msg-action-btn.is-danger:active { color: var(--danger); }
 
 .reply-bar {
   display: flex;
@@ -1045,6 +1017,67 @@ body::before {
   transition: background-color .1s ease, transform .1s cubic-bezier(.32,.72,0,1);
 }
 .lightbox-close:active { background: rgba(255,255,255,0.18); transform: scale(0.92); }
+
+/* ---- menu de contexto da mensagem ---- */
+
+/* Backdrop invisível: cobre a tela toda só pra capturar o toque/clique de
+   fora (e o segundo clique direito) e fechar o menu. */
+.msg-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: transparent;
+}
+
+/* Cartãozinho flutuante, mesma linguagem do .confirm-card: superfície
+   var(--card), traço de 1px var(--border), cantos arredondados, sombra
+   var(--shadow-2). Posicionado via left/top inline pelo app.js. */
+.msg-menu {
+  position: fixed;
+  z-index: 56;
+  min-width: 176px;
+  padding: 5px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-2), inset 0 1px 0 rgba(255,255,255,0.03);
+  display: flex;
+  flex-direction: column;
+  transform-origin: top left;
+  opacity: 0;
+  transform: scale(0.94);
+  transition: opacity .12s ease, transform .14s cubic-bezier(.32,.72,0,1);
+}
+.msg-menu.is-in { opacity: 1; transform: scale(1); }
+
+.msg-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 14px;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+  text-align: left;
+  border-radius: 10px;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+  transition: background-color .1s ease;
+}
+.msg-menu-item svg { width: 18px; height: 18px; flex-shrink: 0; color: var(--muted); }
+.msg-menu-item:hover { background: rgba(255,255,255,0.06); }
+.msg-menu-item:active { background: rgba(255,255,255,0.10); }
+.msg-menu-item.is-danger { color: var(--danger); }
+.msg-menu-item.is-danger svg { color: var(--danger); }
+.msg-menu-item.is-danger:active { background: rgba(224,104,90,0.12); }
 
 /* ---- confirm modal ---- */
 .confirm-overlay {
