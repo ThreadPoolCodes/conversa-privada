@@ -105,8 +105,8 @@ body::before {
   flex-direction: column;
 }
 
-/* ---- login ---- */
-#login-screen {
+/* ---- login / portao de nome ---- */
+#login-screen, #name-screen {
   align-items: center;
   justify-content: center;
   padding: 24px;
@@ -149,11 +149,31 @@ body::before {
   font-size: 14px;
 }
 
-#login-form {
+#login-form, #name-form {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
+
+/* Mesma caixa do #code-input, sem o letter-spacing/mascara e sem o espaco a
+   direita reservado pro botao de revelar - aqui o nome e pra ser lido mesmo. */
+#name-screen-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+  color: var(--ink);
+  border-radius: 14px;
+  padding: 14px 16px;
+  font-size: 16px; /* iOS Safari zooms the whole page on focus below 16px */
+  text-align: center;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+#name-screen-input::placeholder { color: var(--muted); }
+#name-screen-input:focus { border-color: var(--accent); box-shadow: var(--ring); }
 
 .code-input-wrap { position: relative; }
 

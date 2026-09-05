@@ -138,5 +138,16 @@ so it's outside the security model once written.
 
 `public/` is plain HTML/CSS/JS, no framework, no build. `app.js` is one large
 IIFE. Notable client-only bits: love-message counter and Konami-style easter eggs
-persisted in `localStorage`; `NAME_KEY` stores the user's display name; heavy use
-of the Visual Viewport API to fight the iOS keyboard/URL-bar layout jitter.
+persisted in `localStorage`; heavy use of the Visual Viewport API to fight the
+iOS keyboard/URL-bar layout jitter.
+
+**Client-side identity.** `NAME_KEY` stores the display name, and `myName()`
+reads it live off the composer's name field. That name *is* the identity: an
+exact (trimmed) `m.sender === myName()` decides which side a bubble renders on
+(`.msg-row me/them`), matches the server's view-once sender check
+(`server.js`) and drives presence filtering. Because the layout depends on it,
+it can't be empty — `showChat()` routes a browser with no stored name to the
+`#name-screen` gate before `enterChat()` renders anything, and renaming calls
+`rerenderLoadedMessages()` so existing bubbles switch sides. The view-once
+permission check deliberately spells out `m.sender === myName()` instead of
+reusing the presentational `mine` flag.

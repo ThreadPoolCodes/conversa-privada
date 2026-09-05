@@ -31,6 +31,9 @@
   const loginScreen = document.getElementById('login-screen');
   const chatScreen = document.getElementById('chat-screen');
   const decoyScreen = document.getElementById('decoy-screen');
+  const nameScreen = document.getElementById('name-screen');
+  const nameForm = document.getElementById('name-form');
+  const nameScreenInput = document.getElementById('name-screen-input');
   const loginForm = document.getElementById('login-form');
   const codeInput = document.getElementById('code-input');
   const codeRevealBtn = document.getElementById('code-reveal-btn');
@@ -629,13 +632,12 @@
   }, { passive: true });
 
   // Só limpa o DOM das mensagens e o estado forward-only de renderização
-  // (agrupamento, lados, divisórias de data). NÃO mexe em loadedMessages nem
-  // na barra de resposta - é o que loadOlderMessages usa antes de re-renderizar
-  // a lista inteira a partir de loadedMessages.
+  // (agrupamento, divisórias de data). NÃO mexe em loadedMessages nem na barra
+  // de resposta - é o que rerenderLoadedMessages usa antes de redesenhar a
+  // lista inteira a partir de loadedMessages.
   function clearRenderedRows() {
     messagesEl.querySelectorAll('.msg-row, .date-divider').forEach((el) => el.remove());
     renderedIds = new Set();
-    authorSide = new Map();
     lastRow = null;
     lastSender = null;
     lastTs = null;
@@ -654,8 +656,15 @@
 
   const NAME_KEY = 'private-chat:my-name';
   nameInput.value = localStorage.getItem(NAME_KEY) || '';
+  // Trocar de nome muda a identidade do lado do cliente, e a identidade é o
+  // que decide de que lado cada bolha fica (ver `mine` em renderMessage), então
+  // renomear tem que redesenhar a lista - senão as bolhas antigas ficariam do
+  // lado errado até o próximo carregamento.
   nameInput.addEventListener('change', () => {
-    localStorage.setItem(NAME_KEY, nameInput.value.trim());
+    const name = nameInput.value.trim();
+    const previous = localStorage.getItem(NAME_KEY) || '';
+    localStorage.setItem(NAME_KEY, name);
+    if (name !== previous) rerenderLoadedMessages();
   });
 
   let renderedIds = new Set();
@@ -689,26 +698,11 @@
   let lastDateKey = null;
 
   // Consecutive messages from the same sender stop being visually grouped
-  // once more than this much time has passed between them, even though
-  // they're still "the same conversation turn" as far as sideForSender is
-  // concerned - matches how WhatsApp breaks a run after a gap instead of
-  // grouping messages sent hours apart under one shared timestamp.
+  // once more than this much time has passed between them, even though they're
+  // still the same sender on the same side - matches how WhatsApp breaks a run
+  // after a gap instead of grouping messages sent hours apart under one shared
+  // timestamp.
   const GROUP_GAP_MS = 5 * 60 * 1000;
-
-  // Which side of the screen each author's bubbles render on. Deterministic
-  // and shared by every viewer (unlike comparing against "my name" typed
-  // into this particular browser): the first sender to appear in the
-  // conversation's chronological order (same for everyone, since the server
-  // always returns messages in send order) renders on the left, any other
-  // sender renders on the right. That way two different authors always end
-  // up on opposite sides, for whoever is looking at the chat.
-  let authorSide = new Map();
-  function sideForSender(name) {
-    if (!authorSide.has(name)) {
-      authorSide.set(name, authorSide.size === 0 ? 'them' : 'me');
-    }
-    return authorSide.get(name);
-  }
 
   // Bubble timestamps are HH:mm only - the date lives in the divider rows
   // instead (see fmtDateDivider/dateKey below), matching how WhatsApp
@@ -1092,7 +1086,14 @@
     }
 
     const color = nameColor(m.sender);
-    const mine = sideForSender(m.sender) === 'me';
+    // Lado da bolha = quem está olhando a tela, como em qualquer mensageiro:
+    // o que EU mandei vai pra direita, o resto pra esquerda. A identidade é o
+    // nome de exibição comparado exatamente (trim), o mesmo critério que o
+    // servidor usa pra "visualização única" (server.js) e que a presença usa
+    // em otherPeopleOnline - uma noção só de identidade no app inteiro.
+    // Por isso myName() não pode estar vazio: showChat() exige o nome antes de
+    // renderizar qualquer mensagem, e renomear re-renderiza a lista.
+    const mine = m.sender === myName();
     // Same author as the message right before this one, sent within the
     // grouping window → render as part of the same visual group instead of
     // a brand-new block.
@@ -1143,14 +1144,14 @@
       bubble.appendChild(label);
       bubble.appendChild(makeTimeEl(m.ts));
     } else if (m.ephemeral) {
-      // Deliberately NOT the `mine` (visual left/right side) flag here -
-      // sideForSender is a fixed, conversation-wide left/right convention
-      // shared identically by both devices (see its own comment above), not
-      // "did THIS device send it". Whether view-once media is even
-      // tappable has to key off actual identity - m.sender === myName() -
-      // or someone could see their own sent photo rendered as an openable
-      // "toque para ver" and get an unexplained 403 back from the server
-      // when they tap it, which already refuses that (see server.js).
+      // Escrito por extenso, e não reaproveitando o `mine` acima, de
+      // propósito: hoje as duas expressões são a mesma coisa, mas `mine` é o
+      // lado VISUAL da bolha e isto aqui é uma permissão. Se o critério de
+      // lado mudar de novo, quem pode abrir mídia de visualização única tem
+      // que continuar preso à identidade real - m.sender === myName() - ou
+      // alguém veria a própria foto enviada como um "toque para ver" clicável
+      // e levaria um 403 sem explicação do servidor, que já recusa isso
+      // (ver server.js).
       buildEphemeralLockedContent(bubble, m, m.sender === myName());
     } else {
       if (m.replyTo) {
@@ -1411,12 +1412,36 @@
     return rows[rows.length - 1] || null;
   }
 
-  // Busca o lote imediatamente anterior ao que já está carregado e re-renderiza
-  // a lista inteira a partir de loadedMessages (ver comentário na declaração de
-  // loadedMessages). Preserva a posição de leitura ancorando na primeira
-  // mensagem visível: mede onde ela está na viewport antes, e depois do
-  // re-render corrige o scroll pra ela voltar exatamente pro mesmo lugar -
-  // robusto mesmo se o conteúdo prependido sofrer reflow.
+  // Redesenha a lista inteira a partir de loadedMessages (ver comentário na
+  // declaração de loadedMessages) preservando a posição de leitura: ancora na
+  // primeira mensagem visível, mede onde ela está na viewport antes, e depois
+  // do re-render corrige o scroll pra ela voltar exatamente pro mesmo lugar -
+  // robusto mesmo se o conteúdo sofrer reflow. Usado ao paginar pra trás e ao
+  // trocar de nome (que muda de que lado cada bolha fica).
+  function rerenderLoadedMessages() {
+    const anchor = firstVisibleRow();
+    const anchorId = anchor && anchor.dataset.id;
+    const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
+
+    clearRenderedRows();
+    loadedMessages.forEach(renderMessage);
+
+    const newAnchor = anchorId
+      ? messagesEl.querySelector(`.msg-row[data-id="${anchorId}"]`)
+      : null;
+    if (newAnchor) {
+      // Assinala o scroll em absoluto (zera → mede a âncora nessa base → posiciona)
+      // em vez de "+=", pra não depender de onde o navegador deixou o scrollTop
+      // depois do teardown/re-render nem do scroll-anchoring dele.
+      messagesEl.scrollTop = 0;
+      messagesEl.scrollTop = newAnchor.getBoundingClientRect().top - anchorTop;
+    }
+    updateScrollBtn();
+    updateEmptyState();
+  }
+
+  // Busca o lote imediatamente anterior ao que já está carregado e redesenha a
+  // lista com ele na frente.
   async function loadOlderMessages() {
     if (loadingOlder || !hasMoreOlder || !loadedMessages.length) return;
     loadingOlder = true;
@@ -1435,27 +1460,11 @@
       hasMoreOlder = false;
       return;
     }
-    const anchor = firstVisibleRow();
-    const anchorId = anchor && anchor.dataset.id;
-    const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
-
+    // A âncora é medida dentro de rerenderLoadedMessages, antes de ele mexer
+    // no DOM - o array já ter crescido aqui em cima não interfere.
     loadedMessages = older.concat(loadedMessages);
     hasMoreOlder = !!hasMore;
-    clearRenderedRows();
-    loadedMessages.forEach(renderMessage);
-
-    const newAnchor = anchorId
-      ? messagesEl.querySelector(`.msg-row[data-id="${anchorId}"]`)
-      : null;
-    if (newAnchor) {
-      // Assinala o scroll em absoluto (zera → mede a âncora nessa base → posiciona)
-      // em vez de "+=", pra não depender de onde o navegador deixou o scrollTop
-      // depois do teardown/re-render nem do scroll-anchoring dele.
-      messagesEl.scrollTop = 0;
-      messagesEl.scrollTop = newAnchor.getBoundingClientRect().top - anchorTop;
-    }
-    updateScrollBtn();
-    updateEmptyState();
+    rerenderLoadedMessages();
   }
 
   // Aplica uma alteração ao item correspondente em loadedMessages (a lista
@@ -1541,6 +1550,7 @@
     loginScreen.classList.remove('hidden');
     chatScreen.classList.add('hidden');
     decoyScreen.classList.add('hidden');
+    nameScreen.classList.add('hidden');
     codeInput.focus();
   }
 
@@ -1551,10 +1561,46 @@
     loginScreen.classList.add('hidden');
     chatScreen.classList.add('hidden');
     decoyScreen.classList.remove('hidden');
+    nameScreen.classList.add('hidden');
   }
 
+  // Sem nome não dá pra saber o que é "meu", e é isso que decide o lado das
+  // bolhas - então o nome vem antes de qualquer mensagem ser renderizada.
+  // Único ponto de entrada do chat (checkAuth e o login passam por aqui).
   async function showChat() {
+    if (!myName()) {
+      showNamePrompt();
+      return;
+    }
+    await enterChat();
+  }
+
+  function showNamePrompt() {
     loginScreen.classList.add('hidden');
+    chatScreen.classList.add('hidden');
+    decoyScreen.classList.add('hidden');
+    nameScreen.classList.remove('hidden');
+    nameScreenInput.value = localStorage.getItem(NAME_KEY) || '';
+    nameScreenInput.focus();
+  }
+
+  nameForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = nameScreenInput.value.trim();
+    if (!name) {
+      nameScreenInput.focus();
+      return;
+    }
+    localStorage.setItem(NAME_KEY, name);
+    // O campo do compositor continua sendo a fonte que myName() lê.
+    nameInput.value = name;
+    nameScreen.classList.add('hidden');
+    await enterChat();
+  });
+
+  async function enterChat() {
+    loginScreen.classList.add('hidden');
+    nameScreen.classList.add('hidden');
     chatScreen.classList.remove('hidden');
     await loadMessages();
     connectStream();

@@ -35,6 +35,22 @@
   </div>
 </div>
 
+<!-- Portão de nome: a identidade (nome de exibição) decide de que lado cada
+     bolha aparece, então ela não pode estar vazia quando o chat renderiza.
+     showChat() manda pra cá quem ainda não tem nome salvo neste navegador. -->
+<div id="name-screen" class="screen hidden">
+  <div class="login-card">
+    <div class="login-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.75"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>
+    </div>
+    <p class="login-hint">Como você quer aparecer na conversa?</p>
+    <form id="name-form">
+      <input id="name-screen-input" type="text" maxlength="60" placeholder="seu nome" autocomplete="off" autocapitalize="words" autocorrect="off" spellcheck="false" name="not-a-real-name-field" />
+      <button type="submit">Continuar</button>
+    </form>
+  </div>
+</div>
+
 <div id="chat-screen" class="screen hidden">
   <header class="chat-header">
     <span class="dot"></span>
