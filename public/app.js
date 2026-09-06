@@ -710,7 +710,7 @@
 
   // Tracks the previously-rendered row/sender/time so consecutive messages
   // from the same author can be visually grouped (tighter spacing, avatar/
-  // name shown once, timestamp only on the last one of the run) instead of
+  // name shown once) instead of
   // each rendering as a fully separate message like before. lastTs also
   // gates grouping on a time gap (see renderMessage) and lastDateKey drives
   // the day-divider rows.
@@ -928,7 +928,9 @@
     const bubble = row && row.querySelector('.bubble');
     if (!bubble || bubble.querySelector('.link-preview-card')) return;
     const wasNearBottom = isNearBottom();
-    bubble.appendChild(buildLinkPreviewCard(linkPreview));
+    // Card entra ACIMA do texto, estilo WhatsApp (ver buildBubbleContent).
+    const textEl = bubble.querySelector('.bubble-text');
+    bubble.insertBefore(buildLinkPreviewCard(linkPreview), textEl);
     if (wasNearBottom) scrollToBottom();
   }
 
@@ -983,7 +985,13 @@
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = `reaction-chip${agg.mine ? ' mine' : ''}`;
-      chip.textContent = agg.count > 1 ? `${emoji} ${agg.count}` : emoji;
+      chip.textContent = emoji;
+      if (agg.count > 1) {
+        const count = document.createElement('span');
+        count.className = 'reaction-count';
+        count.textContent = agg.count;
+        chip.appendChild(count);
+      }
       chip.addEventListener('click', () => sendReaction(m.id, emoji));
       wrap.appendChild(chip);
     }
@@ -1010,19 +1018,21 @@
 
   function buildBubbleContent(bubble, m) {
     if (m.type === 'text') {
+      // Card de preview ACIMA do texto (estilo WhatsApp). Já vem resolvido
+      // no histórico (ver /api/messages); um preview ainda em voo chega
+      // depois pelo SSE "message-updated" (applyLinkPreview).
+      if (m.linkPreview) {
+        bubble.appendChild(buildLinkPreviewCard(m.linkPreview));
+      }
       // append (not bubble.textContent=) so we don't wipe out a reply-quote
       // block that may already have been appended before this call.
       const textEl = document.createElement('span');
       textEl.className = 'bubble-text';
       linkify(textEl, m.text);
       bubble.appendChild(textEl);
+      // A hora é absoluta no canto do balão (ver .msg-time); a ordem no DOM
+      // não muda onde ela aparece, mas deixamos por último por clareza.
       bubble.appendChild(makeTimeEl(m.ts));
-      // Already resolved by the time this message loaded from history
-      // (see /api/messages); a preview still in flight arrives later via
-      // the "message-updated" SSE event (applyLinkPreview).
-      if (m.linkPreview) {
-        bubble.appendChild(buildLinkPreviewCard(m.linkPreview));
-      }
     } else if (m.type === 'image') {
       const wrap = document.createElement('span');
       wrap.className = 'bubble-media-wrap';
@@ -1273,9 +1283,8 @@
     body.appendChild(bubble);
 
     // Chips de reação colados embaixo do balão (fora do .bubble, no
-    // .msg-body - não mexem no .msg-time flutuante nem na lógica de
-    // esconder timestamp de grupo). rerenderLoadedMessages redesenha por
-    // aqui, então nada se perde ao paginar pra trás / trocar de nome.
+    // .msg-body - não mexem no .msg-time). rerenderLoadedMessages redesenha
+    // por aqui, então nada se perde ao paginar pra trás / trocar de nome.
     if (!m.deleted && m.reactions && m.reactions.length) {
       body.appendChild(buildReactions(m));
     }
@@ -1288,14 +1297,9 @@
     line.appendChild(body);
     row.appendChild(line);
 
-    if (grouped && lastRow) {
-      // Only the last message of a group keeps its visible timestamp - but
-      // never hide a photo/video's overlay pill, which WhatsApp always
-      // shows regardless of grouping since it doesn't cost any extra
-      // vertical space the way the floated text-bubble time does.
-      const prevTime = lastRow.querySelector('.msg-time:not(.msg-time-overlay)');
-      if (prevTime) prevTime.classList.add('hidden');
-    }
+    // Cada mensagem carrega o seu próprio horário (HH:mm), mesmo dentro de um
+    // grupo de mensagens seguidas do mesmo remetente - antes só a última do
+    // grupo mantinha o timestamp visível.
 
     messagesEl.appendChild(row);
     lastRow = row;

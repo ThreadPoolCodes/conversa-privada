@@ -452,6 +452,7 @@ body::before {
 }
 
 .bubble {
+  position: relative;
   min-width: 0;
   padding: 10px 14px;
   border-radius: var(--radius);
@@ -481,12 +482,6 @@ body::before {
   user-select: none;
   -webkit-touch-callout: none;
 }
-/* .msg-time floats inside the bubble (see below) so the last line of text
-   wraps around it, WhatsApp-style, instead of sitting on its own line
-   underneath. A float needs this to make the bubble's own height actually
-   contain it. */
-.bubble::after { content: ""; display: table; clear: both; }
-
 .msg-row.me .bubble {
   background: var(--bubble-me);
   border-color: var(--bubble-me-border);
@@ -621,6 +616,7 @@ body::before {
   position: absolute;
   right: 6px;
   bottom: 6px;
+  transform: none;
   background: rgba(0, 0, 0, 0.55);
   color: #f2f2f2;
   padding: 2px 7px;
@@ -698,14 +694,34 @@ body::before {
 }
 
 .msg-time {
-  float: right;
-  clear: both;
+  /* Estilo WhatsApp: a hora fica ancorada no canto inferior direito do
+     balão (distância fixa), e a última linha do texto reserva um vão do
+     tamanho dela (.bubble-text::after) pra ela caber ao lado quando sobra
+     espaço - senão o vão quebra sozinho e a hora fica numa "linha" só dela.
+     Bolhas de mídia são a exceção: lá é a pílula sobreposta
+     .msg-time-overlay. Arquivo / visualização única (flex) voltam pro
+     fluxo logo abaixo. */
+  position: absolute;
+  right: 12px;
+  bottom: 7px;
+  float: none;
+  transform: none;
   font-size: 11px;
   color: var(--muted);
-  margin: 4px 0 -2px 10px;
   line-height: 1;
   white-space: nowrap;
 }
+
+/* Vão invisível no fim do texto, da largura da hora - é o que deixa a
+   última linha "abrir espaço" pra ela (ou quebrar limpo quando não cabe). */
+.bubble-text::after {
+  content: "\00a0";
+  display: inline-block;
+  width: 42px;
+}
+
+/* Áudio não tem .bubble-text pra reservar o vão: reserva na marra embaixo. */
+.bubble:has(audio) { padding-bottom: 24px; }
 
 /* Locked "visualização única" placeholder bubble. */
 .bubble.ephemeral-locked {
@@ -720,7 +736,8 @@ body::before {
 .ephemeral-icon { display: flex; flex-shrink: 0; color: var(--accent); }
 .ephemeral-icon svg { width: 18px; height: 18px; }
 .ephemeral-label { font-size: 15px; flex: 1; }
-.bubble.ephemeral-locked .msg-time { margin-left: 8px; }
+.bubble.file-bubble .msg-time,
+.bubble.ephemeral-locked .msg-time { position: static; margin-left: auto; transform: none; }
 
 .reply-bar {
   display: flex;
@@ -1139,8 +1156,10 @@ body::before {
 .msg-reactions {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin-top: -11px;
+  gap: 3px;
+  /* Sobe uns ~10% da própria altura por cima da base do balão - um
+     encaixe leve, sem enterrar a reação na bolha. */
+  margin-top: -4px;
   position: relative;
   z-index: 2;
 }
@@ -1151,20 +1170,26 @@ body::before {
   font: inherit;
   align-items: center;
   gap: 3px;
-  padding: 2px 8px;
-  font-size: 14px;
-  line-height: 1.5;
+  /* Emoji grande dentro de uma pílula folgada; fundo discreto pra não
+     competir com o balão, mas a pílula em si é bem visível. */
+  padding: 3px 9px;
+  font-size: 15px;
+  line-height: 1.2;
   border-radius: 999px;
   background: var(--card-2);
   border: 1px solid var(--bg-1);
-  box-shadow: var(--shadow-1);
   color: var(--ink);
   cursor: pointer;
+  font-variant-numeric: tabular-nums;
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
   touch-action: manipulation;
+  transition: background-color .12s ease;
 }
+/* Número da contagem menor e apagado ao lado do emoji. */
+.reaction-chip .reaction-count { font-size: 11px; opacity: 0.6; margin-left: 1px; }
+.reaction-chip:hover { background: var(--bg-1); }
 .reaction-chip.mine { border-color: var(--accent); }
 
 /* ---- confirm modal ---- */
