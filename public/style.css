@@ -375,7 +375,7 @@ body::before {
 .msg-row:first-child { margin-top: 0; }
 /* Consecutive messages from the same author sit close together, WhatsApp/
    Telegram-style, instead of getting the full inter-group gap. */
-.msg-row.grouped { margin-top: 3px; }
+.msg-row.grouped { margin-top: 6px; }
 .msg-row.me { align-self: flex-end; align-items: flex-end; }
 .msg-row.them { align-self: flex-start; align-items: flex-start; }
 
@@ -492,6 +492,12 @@ body::before {
   border-color: var(--bubble-them-border);
   border-bottom-left-radius: 6px;
 }
+/* Numa sequência de balões seguidos do mesmo remetente, só o ÚLTIMO do grupo
+   mantém o canto "apontado" - os de cima ficam todos arredondados, como no
+   WhatsApp. .has-follower entra na linha quando a mensagem seguinte é agrupada
+   com ela (ver renderMessage em app.js). */
+.msg-row.me.has-follower .bubble { border-bottom-right-radius: var(--radius); }
+.msg-row.them.has-follower .bubble { border-bottom-left-radius: var(--radius); }
 
 .msg-link {
   color: var(--accent);
@@ -1054,6 +1060,130 @@ body::before {
   transition: background-color .1s ease, transform .1s cubic-bezier(.32,.72,0,1);
 }
 .lightbox-close:active { background: rgba(255,255,255,0.18); transform: scale(0.92); }
+
+/* ---- aba de mídia ---- */
+
+/* z-index 45: por cima de tudo do chat (header 5, botões 6), mas por baixo
+   do lightbox (50) - clicar num tile abre a mídia cheia SOBRE o painel.
+   A altura vem de --app-height, nunca de 100vh: é a única medida que o
+   app.js mantém em sincronia com o teclado do iOS (ver o topo do arquivo). */
+.media-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  height: var(--app-height);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(160deg, var(--bg-1), var(--bg-2));
+}
+
+.media-panel .title { flex: 1; }
+
+.media-count {
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.media-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* .center-state usa margin:auto, que só centraliza de verdade dentro de um
+   flex container - aqui o pai é um bloco com scroll, então o espaçamento
+   vertical é explícito. */
+.media-scroll .center-state { margin: 48px auto; }
+
+/* auto-fill + minmax deixa a grade responder à largura sozinha: 3 colunas
+   num iPhone, 6+ num desktop, sem media query. */
+.media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 3px;
+  padding: 3px;
+}
+
+.media-month {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 16px 6px 6px;
+}
+.media-month:first-child { padding-top: 8px; }
+
+.media-tile {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  overflow: hidden;
+  /* Fundo enquanto a miniatura não chega - o tile já ocupa o lugar certo,
+     então a grade nunca "pula" conforme as imagens carregam. */
+  background: var(--card);
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  touch-action: manipulation;
+  transition: transform .1s cubic-bezier(.32,.72,0,1), opacity .1s ease;
+}
+.media-tile:active { transform: scale(0.96); opacity: 0.85; }
+
+.media-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0;
+  transition: opacity .18s ease;
+}
+/* Só aparece depois do load pra não piscar o alt/quadro vazio no meio do
+   fade da miniatura. */
+.media-tile img.is-loaded { opacity: 1; }
+
+/* Vídeo antigo, sem miniatura: o tile fica sendo só o ícone. */
+.media-tile-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  opacity: 0.55;
+}
+.media-tile-placeholder svg { width: 30px; height: 30px; }
+
+.media-tile-badge {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: rgba(5, 6, 9, 0.6);
+  color: #fff;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.media-tile-badge svg { width: 10px; height: 10px; }
+
+/* Alvo do IntersectionObserver de scroll infinito. Sem altura o observer
+   nunca dispara em alguns navegadores. */
+.media-sentinel { height: 1px; }
 
 /* ---- menu de contexto da mensagem ---- */
 

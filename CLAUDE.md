@@ -46,8 +46,9 @@ exists in memory during the moment someone logs in.
   with layout `[iv(12)][authTag(16)][ciphertext]`. A GCM auth failure on decrypt
   **is** how a wrong code is detected (`WrongCodeError`).
 - Everything on disk is ciphertext: `data/store.enc` (the whole message log as
-  one JSON blob) and `data/media/<id>.enc` (one file per upload). Writes are
-  atomic (temp file + rename), mode `0600`.
+  one JSON blob) and `data/media/<id>.enc` — one file per upload, plus a second
+  one holding the thumbnail when the message has a `thumbId` (see the media
+  tab below). Writes are atomic (temp file + rename), mode `0600`.
 - `lib/auth.js`: on successful login the derived key is held in an in-memory
   `sessions` Map keyed by a random session id; the client gets an HMAC-signed
   HttpOnly cookie (`pc_session`, 30-day TTL, `Path` scoped to the room).
@@ -112,8 +113,72 @@ endpoint, `scheduleExpiry`, and `reconcileEphemeral` in `server.js`:
   (no DNS-rebinding protection); acceptable only because both users are already
   fully trusted. `stripTrailingPunctuationServer` must stay in sync with
   `stripTrailingPunctuation` in `app.js`.
-- **Media dimensions**: client reads intrinsic width/height before upload and
-  sends them so the bubble reserves layout space and doesn't jump on load.
+- **Media dimensions**: `readMediaMeta` in `app.js` reads intrinsic width/height
+  before upload and sends them so the bubble reserves layout space and doesn't
+  jump on load.
+- **Video bubbles use `poster`**: set to `/api/media/<thumbId>` when the message
+  has one (same thumbnail the media tab uses). Without it a video bubble shows
+  nothing at all until the browser resolves `preload="metadata"` — and since
+  `/api/media` has no Range support, that can mean pulling a real chunk of a
+  multi-MB file first. Video sent before thumbnails existed has no `thumbId`
+  and falls back to the old (posterless) behavior.
+
+### Aba "Mídia" (grade de fotos e vídeos)
+
+A `#media-panel`, a full-screen panel over the chat (z-index 45 — under the
+lightbox at 50, so tapping a tile opens the full media *over* the grid). It is
+in-memory state, never a URL: `api()` derives the room path from
+`location.pathname` verbatim, so any client-side sub-path would break every
+request on the page.
+
+The whole design exists to keep the grid cheap, since `/api/media/:id` returns
+the entire decrypted file with no Range support and `no-store`:
+
+- **Thumbnails are generated client-side**, at upload time, by `readMediaMeta` →
+  `drawThumb` — the probe element that was already being created to measure
+  width/height also gets drawn into a `<canvas>`, longest side 400px, JPEG
+  q0.72 (~20–60KB). For video it seeks to ~0.5s first (`muted` + `playsInline`
+  are required or WebKit won't decode the frame at all). It also does a
+  silent `play()`/`pause()` on the probe before seeking — confirmed by
+  reproducing against the WebKit engine: without it, WebKit's `<video>` never
+  actually decodes a frame even after `seeked` fires, and `drawImage` captures
+  solid black. Chromium doesn't have this problem, so the extra step is a
+  no-op there. Any failure resolves `thumb:
+  null` and the message just ends up with no `thumbId` — it never blocks or
+  fails the upload.
+- `POST /api/media` takes both files (`upload.fields`, so **`req.file` doesn't
+  exist on that route** — it's `req.files.file[0]`) and stores the thumb as a
+  second encrypted blob under `thumbId`, capped at `MAX_THUMB_BYTES`.
+- `GET /api/media/:id` resolves either `mediaId` **or** `thumbId`, and forces
+  `Content-Type: image/jpeg` for thumbs — using `msg.mimeType` would serve
+  `video/mp4` for a video's thumbnail and the `<img>` would render nothing. It
+  uses `loadStoreOnly` (no `reconcileEphemeral`) because the grid fires dozens
+  of these in a row.
+- `GET /api/media-list` returns metadata only, newest first, with the same
+  `before`-cursor pagination as `/api/messages`.
+- The grid sets no `src` at all: an `IntersectionObserver` (600px margin)
+  assigns it when a tile approaches the viewport, so only visible tiles fetch
+  anything. A second observer on `#media-sentinel` pages. The full file is
+  fetched in exactly one place — the tile's click handler, via `openLightbox`.
+- The grid stays mounted in the DOM while the panel is closed. Destroying it
+  would re-download every thumbnail on reopen, since responses are `no-store`.
+- **Media predating this feature** self-heals, but only for photos: a photo
+  tile with no `thumbId` loads the original (lazily — heavy but correct), and
+  once it decodes, a one-at-a-time queue draws it to canvas and `POST`s to
+  `/api/media/:mediaId/thumb`, so the next open is cheap. Silent on failure.
+  A **video with no `thumbId` gets no `src` at all** — just a placeholder icon
+  and the ▶ badge. Pointing an `<img>` at an `.mp4` downloads the entire file
+  (measured: 5 MB) and then fails to decode it, rendering nothing; and there is
+  no cheap way to grab a frame without that download, since `/api/media` has no
+  Range support. Tapping the tile still plays it in the lightbox. Videos
+  uploaded from now on carry a thumbnail from the start.
+- **View-once media never enters any of this**: no thumbnail is stored for it
+  (client and server both refuse), `sanitizeMessage` strips `thumbId` alongside
+  `mediaId`, `/api/media-list` filters it out in every state, and the retrofit
+  endpoint 403s on it. A thumbnail outliving the 10s window would defeat the
+  whole feature.
+- Deleting a message unlinks **both** blobs. Thumbnails are derived data, so
+  they're excluded from the export zip (which only walks `mediaId`).
 
 ### Decoy / trap password
 

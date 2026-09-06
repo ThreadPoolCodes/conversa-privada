@@ -56,6 +56,9 @@
     <span class="dot"></span>
     <span class="title">conversa</span>
     <div class="header-actions">
+      <button id="media-btn" class="icon-btn" title="Mídia">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/></svg>
+      </button>
       <button id="export-btn" class="icon-btn" title="Exportar backup">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 11l5 5 5-5"/><path d="M5 19.5h14"/></svg>
       </button>
@@ -119,6 +122,34 @@
 <div id="decoy-screen" class="screen hidden">
   <div class="login-card decoy-card">
     <p class="login-hint">Ferramenta ainda não completamente desenvolvida.</p>
+  </div>
+</div>
+
+<!-- Aba "Mídia": painel de tela cheia por cima do chat (mas por baixo do
+     lightbox, que abre em cima dele). Não é rota - o api() do app.js deriva
+     o caminho da sala de location.pathname, então mexer na URL quebraria
+     todos os requests. Fica montado no DOM depois de aberto uma vez: é isso
+     que evita rebaixar todas as miniaturas a cada reabertura, já que
+     /api/media responde com Cache-Control: no-store. -->
+<div id="media-panel" class="media-panel hidden">
+  <header class="chat-header">
+    <button type="button" id="media-back" class="icon-btn" title="Voltar para a conversa" aria-label="Voltar para a conversa">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg>
+    </button>
+    <span class="title">Mídia</span>
+    <span id="media-count" class="media-count"></span>
+  </header>
+  <div id="media-scroll" class="media-scroll">
+    <div id="media-grid" class="media-grid"></div>
+    <div id="media-sentinel" class="media-sentinel"></div>
+    <div id="media-loading" class="center-state hidden">
+      <span class="spin-dot"></span>
+      <span>carregando</span>
+    </div>
+    <div id="media-empty" class="center-state hidden">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.6" fill="currentColor" stroke="none"/><path d="M5 17.5l4.5-5 3.5 3.5 2-2.2L20 17.5"/></svg>
+      <p>Nenhuma foto ou vídeo ainda.<br>O que vocês mandarem aparece aqui.</p>
+    </div>
   </div>
 </div>
 

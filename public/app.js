@@ -52,6 +52,15 @@
   const lightbox = document.getElementById('lightbox');
   const lightboxContent = document.getElementById('lightbox-content');
   const lightboxClose = document.getElementById('lightbox-close');
+  const mediaBtn = document.getElementById('media-btn');
+  const mediaPanel = document.getElementById('media-panel');
+  const mediaBack = document.getElementById('media-back');
+  const mediaScroll = document.getElementById('media-scroll');
+  const mediaGrid = document.getElementById('media-grid');
+  const mediaSentinel = document.getElementById('media-sentinel');
+  const mediaLoading = document.getElementById('media-loading');
+  const mediaEmpty = document.getElementById('media-empty');
+  const mediaCount = document.getElementById('media-count');
   const confirmOverlay = document.getElementById('confirm-overlay');
   const confirmText = document.getElementById('confirm-text');
   const confirmCancel = document.getElementById('confirm-cancel');
@@ -1043,7 +1052,7 @@
       // Reserves the right box on first paint (browsers derive an intrinsic
       // aspect-ratio from width/height attrs even under responsive CSS) so
       // the bubble doesn't grow/shift once the real file finishes loading -
-      // see readMediaDimensions, captured client-side before upload.
+      // see readMediaMeta, captured client-side before upload.
       if (m.width && m.height) {
         img.width = m.width;
         img.height = m.height;
@@ -1059,6 +1068,15 @@
       vid.src = api(`/api/media/${m.mediaId}`);
       vid.controls = true;
       vid.preload = 'metadata';
+      // Sem poster, o balão fica em branco até o navegador conseguir os
+      // metadados do vídeo - e como /api/media não tem suporte a Range,
+      // "metadados" pode significar baixar o arquivo inteiro (1-12MB) antes
+      // de mostrar qualquer coisa. m.thumbId já existe (mesma miniatura da
+      // aba Mídia, ~20-60KB) e resolve isso na hora. Vídeo antigo sem
+      // thumbId cai de volta no comportamento de sempre.
+      if (m.thumbId) {
+        vid.poster = api(`/api/media/${m.thumbId}`);
+      }
       if (m.width && m.height) {
         vid.width = m.width;
         vid.height = m.height;
@@ -1211,6 +1229,10 @@
     row.className = `msg-row ${mine ? 'me' : 'them'}${grouped ? ' grouped' : ''}${animate ? ' msg-enter' : ''}`;
     row.dataset.id = m.id;
 
+    // Esta mensagem se agrupa com a anterior → a bolha de cima deixa de ser a
+    // última do grupo e perde o canto "apontado" (ver .has-follower no CSS).
+    if (grouped && lastRow) lastRow.classList.add('has-follower');
+
     const line = document.createElement('div');
     line.className = 'msg-line';
 
@@ -1354,6 +1376,325 @@
     if (e.target === lightbox) lightbox.classList.add('hidden');
   });
 
+  // ---- aba de mídia ----
+  //
+  // Grade de todas as fotos e vídeos da conversa. A regra que define o
+  // desenho todo: a grade baixa SÓ miniaturas (~30KB), e só das que estão
+  // perto da tela; o arquivo original (1-12MB) só é buscado no clique, no
+  // lightbox. Sem isso, abrir a aba com 40 fotos baixaria centenas de MB.
+  //
+  // O painel é estado em memória, nunca URL - o api() no topo do arquivo
+  // deriva o caminho da sala de location.pathname, então mexer na URL
+  // quebraria todos os requests da página.
+
+  const MEDIA_PAGE_SIZE = 120;
+
+  let mediaItems = [];          // tudo que já foi carregado, mais novo → mais antigo
+  let mediaCursor = null;       // id da última mensagem do lote (paginação)
+  let mediaHasMore = true;
+  let mediaLoadingPage = false;
+  let mediaLoadedOnce = false;
+  let mediaLastMonthKey = null; // pra não repetir o cabeçalho do mês
+  let thumbObserver = null;
+  let mediaPageObserver = null;
+
+  function isMediaPanelOpen() {
+    return !mediaPanel.classList.contains('hidden');
+  }
+
+  // Carrega a miniatura só quando o tile chega perto da tela. rootMargin
+  // generoso (600px) pra imagem já estar pronta quando a pessoa rola até
+  // ela, em vez de aparecer um quadrado cinza que preenche depois.
+  function ensureThumbObserver() {
+    if (thumbObserver) return thumbObserver;
+    thumbObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const img = entry.target;
+        thumbObserver.unobserve(img); // uma vez só: já tem src, acabou
+        if (img.dataset.src) {
+          img.src = img.dataset.src;
+          delete img.dataset.src;
+        }
+      }
+    }, { root: mediaScroll, rootMargin: '600px 0px' });
+    return thumbObserver;
+  }
+
+  function ensureMediaPageObserver() {
+    if (mediaPageObserver) return mediaPageObserver;
+    mediaPageObserver = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) loadMediaPage();
+    }, { root: mediaScroll, rootMargin: '400px 0px' });
+    mediaPageObserver.observe(mediaSentinel);
+    return mediaPageObserver;
+  }
+
+  function monthKeyOf(ts) {
+    const d = new Date(ts);
+    return `${d.getFullYear()}-${d.getMonth()}`;
+  }
+
+  function monthLabelOf(ts) {
+    return new Date(ts).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  }
+
+  const VIDEO_BADGE_SVG =
+    '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5L8 5.5Z"/></svg>';
+
+  // Mostrado no lugar da miniatura pro vídeo antigo, que não tem uma e
+  // não pode ganhar sem baixar o arquivo inteiro.
+  const VIDEO_PLACEHOLDER_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10.5 21 7.5v9L16 13.5"/></svg>';
+
+  function buildMediaTile(item) {
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = 'media-tile';
+    tile.dataset.id = item.id;
+    // O tile é sempre quadrado (aspect-ratio no CSS) e a imagem é cortada
+    // com object-fit: cover. Respeitar a proporção de cada mídia deixaria
+    // as linhas irregulares - uma foto 4:3 do lado de um vídeo 16:9 - e é
+    // por isso que toda galeria de verdade usa quadrado. Como o tamanho
+    // não depende do arquivo, a grade também já nasce no lugar certo e
+    // nunca reflui conforme as miniaturas chegam.
+
+    // O que o tile carrega, em ordem de preferência:
+    //   1. tem thumbId          -> a miniatura (~30KB). O caso normal.
+    //   2. foto sem thumbId     -> o original. Pesado, mas renderiza, e é
+    //      justamente o que alimenta o retrofit logo abaixo.
+    //   3. vídeo sem thumbId    -> NADA. Um <img> apontando pra um .mp4
+    //      baixa o arquivo inteiro (5MB medidos) e depois falha ao
+    //      decodificar, mostrando um quadrado vazio - o desperdício exato
+    //      que essa aba existe pra evitar. Fica só o placeholder com o
+    //      ícone de vídeo; quem quiser ver, clica e abre no lightbox.
+    const canPreview = item.thumbId || item.type === 'image';
+
+    if (canPreview) {
+      const img = document.createElement('img');
+      img.decoding = 'async';
+      img.alt = item.filename || (item.type === 'video' ? 'Vídeo' : 'Foto');
+      // SEM src aqui: quem define é o IntersectionObserver, quando o tile
+      // chega perto da tela.
+      img.dataset.src = api(`/api/media/${item.thumbId || item.mediaId}`);
+      img.addEventListener('load', () => {
+        img.classList.add('is-loaded');
+        if (!item.thumbId) queueThumbBackfill(item, img);
+      });
+      tile.appendChild(img);
+      ensureThumbObserver().observe(img);
+    } else {
+      const ph = document.createElement('span');
+      ph.className = 'media-tile-placeholder';
+      ph.innerHTML = VIDEO_PLACEHOLDER_SVG;
+      tile.appendChild(ph);
+    }
+
+    if (item.type === 'video') {
+      const badge = document.createElement('span');
+      badge.className = 'media-tile-badge';
+      badge.innerHTML = VIDEO_BADGE_SVG;
+      tile.appendChild(badge);
+    }
+
+    // O ÚNICO ponto em que o arquivo cheio é baixado.
+    tile.addEventListener('click', () => {
+      openLightbox(item.type === 'video' ? 'video' : 'image', api(`/api/media/${item.mediaId}`));
+    });
+
+    return tile;
+  }
+
+  // Retrofit da mídia antiga: o tile carregou o original, então a imagem
+  // já está decodificada aqui no cliente - desenha no canvas e manda a
+  // miniatura pro servidor guardar. Uma por vez, pra não competir com o
+  // resto da grade por conexão, e silencioso: se falhar, o tile só
+  // continua no caminho pesado na próxima abertura.
+  const thumbBackfillQueue = [];
+  let thumbBackfillRunning = false;
+
+  function queueThumbBackfill(item, img) {
+    if (item.thumbId || item.type !== 'image') return; // vídeo: ver nota abaixo
+    thumbBackfillQueue.push({ item, img });
+    runThumbBackfill();
+  }
+
+  async function runThumbBackfill() {
+    if (thumbBackfillRunning) return;
+    thumbBackfillRunning = true;
+    try {
+      while (thumbBackfillQueue.length) {
+        const { item, img } = thumbBackfillQueue.shift();
+        try {
+          const w = img.naturalWidth;
+          const h = img.naturalHeight;
+          if (!w || !h) continue;
+          const blob = await drawThumb(img, w, h);
+          if (!blob) continue;
+          const form = new FormData();
+          form.append('thumb', blob, 'thumb.jpg');
+          const res = await fetch(api(`/api/media/${item.mediaId}/thumb`), {
+            method: 'POST',
+            body: form,
+          });
+          if (!res.ok) continue;
+          const out = await res.json();
+          if (out && out.thumbId) item.thumbId = out.thumbId;
+        } catch (e) {
+          // silencioso de propósito - é otimização, não funcionalidade
+        }
+      }
+    } finally {
+      thumbBackfillRunning = false;
+    }
+  }
+  // Nota: vídeo antigo não entra no retrofit. Pegar um frame exigiria
+  // baixar o arquivo inteiro num <video> escondido só pra isso, e sem
+  // suporte a Range no servidor seriam megabytes por tile - o oposto do
+  // objetivo. Vídeo enviado a partir de agora já sobe com miniatura.
+
+  function appendMediaItems(items) {
+    const frag = document.createDocumentFragment();
+    for (const item of items) {
+      const key = monthKeyOf(item.ts);
+      if (key !== mediaLastMonthKey) {
+        mediaLastMonthKey = key;
+        const head = document.createElement('div');
+        head.className = 'media-month';
+        head.dataset.key = key;
+        head.textContent = monthLabelOf(item.ts);
+        frag.appendChild(head);
+      }
+      frag.appendChild(buildMediaTile(item));
+    }
+    mediaGrid.appendChild(frag);
+  }
+
+  function updateMediaCount() {
+    mediaCount.textContent = mediaItems.length
+      ? `${mediaItems.length}${mediaHasMore ? '+' : ''}`
+      : '';
+    mediaEmpty.classList.toggle('hidden', mediaItems.length > 0 || mediaLoadingPage || !mediaLoadedOnce);
+  }
+
+  async function loadMediaPage() {
+    if (mediaLoadingPage || !mediaHasMore) return;
+    mediaLoadingPage = true;
+    mediaLoading.classList.remove('hidden');
+    try {
+      const qs = `limit=${MEDIA_PAGE_SIZE}${mediaCursor ? `&before=${encodeURIComponent(mediaCursor)}` : ''}`;
+      const res = await fetch(api(`/api/media-list?${qs}`));
+      if (!res.ok) throw new Error('media list failed');
+      const data = await res.json();
+      const items = data.items || [];
+      mediaHasMore = !!data.hasMore;
+      if (items.length) {
+        mediaCursor = items[items.length - 1].id;
+        mediaItems = mediaItems.concat(items);
+        appendMediaItems(items);
+      }
+      mediaLoadedOnce = true;
+    } catch (e) {
+      mediaHasMore = false;
+      mediaLoadedOnce = true;
+    } finally {
+      mediaLoadingPage = false;
+      mediaLoading.classList.add('hidden');
+      updateMediaCount();
+    }
+    // A primeira página pode não encher a tela (ou pode ter vindo vazia
+    // porque o lote só tinha texto): se o sentinela ainda está visível,
+    // o observer não dispara de novo sozinho, então puxa a próxima aqui.
+    if (mediaHasMore && !mediaLoadingPage && isMediaPanelOpen()
+        && mediaScroll.scrollHeight <= mediaScroll.clientHeight) {
+      loadMediaPage();
+    }
+  }
+
+  function resetMediaPanel() {
+    mediaGrid.innerHTML = '';
+    mediaItems = [];
+    mediaCursor = null;
+    mediaHasMore = true;
+    mediaLoadedOnce = false;
+    mediaLastMonthKey = null;
+    thumbBackfillQueue.length = 0;
+    updateMediaCount();
+    // Se a aba estava aberta na hora (conversa limpa pela outra pessoa),
+    // recarrega na hora - senão ficaria uma grade vazia sem nem o aviso de
+    // "nenhuma foto ainda", esperando um fechar/abrir pra se resolver.
+    if (isMediaPanelOpen()) loadMediaPage();
+  }
+
+  function openMediaPanel() {
+    mediaPanel.classList.remove('hidden');
+    ensureMediaPageObserver();
+    // A grade fica montada entre aberturas de propósito: /api/media
+    // responde com no-store, então destruir e recriar os <img> significaria
+    // rebaixar todas as miniaturas toda vez que a aba fosse reaberta.
+    if (!mediaLoadedOnce) loadMediaPage();
+  }
+
+  function closeMediaPanel() {
+    mediaPanel.classList.add('hidden');
+  }
+
+  mediaBtn.addEventListener('click', openMediaPanel);
+  mediaBack.addEventListener('click', closeMediaPanel);
+
+  // Escape fecha o de cima primeiro: lightbox, depois o painel.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!lightbox.classList.contains('hidden')) {
+      lightbox.classList.add('hidden');
+    } else if (isMediaPanelOpen()) {
+      closeMediaPanel();
+    }
+  });
+
+  // Mídia nova chegando pelo SSE entra no topo da grade (que é a posição
+  // mais recente), sem refazer a página inteira.
+  function addMediaItemToTop(m) {
+    if (!mediaLoadedOnce) return; // ainda não carregou nada; vai vir na 1ª página
+    if (m.type !== 'image' && m.type !== 'video') return;
+    if (m.ephemeral || m.deleted || !m.mediaId) return;
+    if (mediaItems.some((it) => it.id === m.id)) return;
+
+    const item = {
+      id: m.id, type: m.type, mediaId: m.mediaId, thumbId: m.thumbId,
+      width: m.width, height: m.height, sender: m.sender, ts: m.ts,
+      filename: m.filename,
+    };
+    mediaItems.unshift(item);
+
+    const tile = buildMediaTile(item);
+    const key = monthKeyOf(item.ts);
+    const firstHead = mediaGrid.querySelector('.media-month');
+    // Mês diferente do primeiro cabeçalho (ou grade vazia) → cabeçalho novo
+    // na frente. Mesmo mês → o tile só entra depois do cabeçalho que já existe.
+    if (!firstHead || firstHead.dataset.key !== key) {
+      const head = document.createElement('div');
+      head.className = 'media-month';
+      head.dataset.key = key;
+      head.textContent = monthLabelOf(item.ts);
+      mediaGrid.prepend(tile);
+      mediaGrid.prepend(head);
+      if (!firstHead) mediaLastMonthKey = key;
+    } else {
+      firstHead.after(tile);
+    }
+    updateMediaCount();
+  }
+
+  function removeMediaItem(id) {
+    const i = mediaItems.findIndex((it) => it.id === id);
+    if (i === -1) return;
+    mediaItems.splice(i, 1);
+    const tile = mediaGrid.querySelector(`.media-tile[data-id="${id}"]`);
+    if (tile) tile.remove();
+    updateMediaCount();
+  }
+
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
@@ -1395,7 +1736,7 @@
       };
       setTimeout(tick, 55);
     }
-    // Media that already has width/height reserved (see readMediaDimensions/
+    // Media that already has width/height reserved (see readMediaMeta/
     // renderMessage) doesn't reflow when it finishes loading, so most of
     // these listeners now simply never fire in practice. They're still
     // useful as a fallback for older messages sent before this feature
@@ -1625,6 +1966,7 @@
       const m = JSON.parse(evt.data);
       loadedMessages.push(m);
       renderMessage(m, { animate: true });
+      addMediaItemToTop(m);
       if (wasNearBottom) {
         scrollToBottomWhenReady();
       } else {
@@ -1633,11 +1975,13 @@
     });
     es.addEventListener('cleared', () => {
       resetMessagesView();
+      resetMediaPanel();
     });
     es.addEventListener('message-deleted', (evt) => {
       const { id, expiredEphemeral, deletedBy } = JSON.parse(evt.data);
       patchLoadedMessage(id, { deleted: true, deletedBy, expiredEphemeral: !!expiredEphemeral });
       applyDeletedPlaceholder(id, expiredEphemeral, deletedBy);
+      removeMediaItem(id);
     });
     // The other person opened a view-once photo/video I sent - just a
     // label update (locked → "Aberto"); the media itself never reaches
@@ -1666,6 +2010,11 @@
     chatScreen.classList.add('hidden');
     decoyScreen.classList.add('hidden');
     nameScreen.classList.add('hidden');
+    // O painel de mídia é fixed e vive fora das .screen, então sair não o
+    // esconde sozinho. Zerar também descarta os metadados que ficaram em
+    // memória da sessão anterior.
+    closeMediaPanel();
+    resetMediaPanel();
     codeInput.focus();
   }
 
@@ -1677,6 +2026,7 @@
     chatScreen.classList.add('hidden');
     decoyScreen.classList.remove('hidden');
     nameScreen.classList.add('hidden');
+    closeMediaPanel();
   }
 
   // Sem nome não dá pra saber o que é "meu", e é isso que decide o lado das
@@ -1820,7 +2170,12 @@
   // Best-effort: any failure (unsupported format, slow decode) just
   // resolves with null and that one bubble falls back to the old
   // grows-once-loaded behavior instead of blocking the upload.
-  function readMediaDimensions(file) {
+  //
+  // O mesmo probe que já era criado só pra medir agora também é desenhado
+  // num <canvas> pra gerar a miniatura que a aba "Mídia" usa na grade -
+  // ver drawThumb abaixo. Resultado: { width, height, thumb } com thumb
+  // podendo ser null (e aí o servidor simplesmente não guarda thumbId).
+  function readMediaMeta(file) {
     return new Promise((resolve) => {
       const isImage = file.type.startsWith('image/');
       const isVideo = file.type.startsWith('video/');
@@ -1830,33 +2185,103 @@
       }
       const url = URL.createObjectURL(file);
       let done = false;
-      const finish = (dims) => {
+      const finish = (meta) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
         URL.revokeObjectURL(url);
-        resolve(dims);
+        resolve(meta);
       };
       const timer = setTimeout(() => finish(null), 8000);
+
+      // Mede primeiro (é o que não pode falhar), depois tenta a miniatura.
+      // Se o toBlob der errado, ainda entregamos width/height.
+      const settle = (probe, width, height) => {
+        if (!width || !height) return finish(null);
+        drawThumb(probe, width, height).then((thumb) => {
+          finish({ width, height, thumb });
+        });
+      };
+
       if (isImage) {
         const probe = new Image();
-        probe.onload = () => finish(
-          probe.naturalWidth && probe.naturalHeight
-            ? { width: probe.naturalWidth, height: probe.naturalHeight }
-            : null
-        );
+        probe.onload = () => settle(probe, probe.naturalWidth, probe.naturalHeight);
         probe.onerror = () => finish(null);
         probe.src = url;
       } else {
         const probe = document.createElement('video');
         probe.preload = 'metadata';
-        probe.onloadedmetadata = () => finish(
-          probe.videoWidth && probe.videoHeight
-            ? { width: probe.videoWidth, height: probe.videoHeight }
-            : null
-        );
+        // muted + playsInline: sem os dois o Safari do iOS se recusa a
+        // decodificar o frame fora de um gesto do usuário, e o canvas sai
+        // preto (ou o seek nunca completa).
+        probe.muted = true;
+        probe.playsInline = true;
+        probe.onloadedmetadata = async () => {
+          const w = probe.videoWidth;
+          const h = probe.videoHeight;
+          if (!w || !h) return finish(null);
+          // O Safari (desktop e iOS - mesmo motor WebKit) não decodifica
+          // frame nenhum antes de dar play() pelo menos uma vez: mesmo
+          // depois do seeked, o <video> não tem nada de verdade pro
+          // drawImage capturar, e o canvas sai sólido preto. Confirmado
+          // reproduzindo com o motor WebKit - Chromium não tem esse
+          // problema. muted + playsInline (já setados acima) são o que
+          // permite esse play() rodar sem gesto do usuário; play/pause é
+          // silencioso e nunca chega a ser visível.
+          try {
+            await probe.play();
+            probe.pause();
+          } catch (e) {
+            // play recusado - segue tentando via seek mesmo assim, o
+            // timeout abaixo garante que não trava esperando pra sempre
+          }
+          // Frame do comecinho, mas não o 0 - muito vídeo abre com um
+          // frame preto de fade-in, o que daria uma grade de quadrados
+          // pretos. Meio segundo já pegou alguma coisa na maioria deles.
+          const target = Math.min(0.5, (probe.duration || 1) / 2);
+          let settled = false;
+          const grab = () => {
+            if (settled) return;
+            settled = true;
+            settle(probe, w, h);
+          };
+          probe.onseeked = grab;
+          try {
+            probe.currentTime = target;
+          } catch (e) {
+            grab(); // seek recusado: desenha o que estiver decodificado
+          }
+          // Se o seeked não vier (acontece em alguns codecs no iOS), não
+          // fica pendurado até o timeout de 8s levar a dimensão junto.
+          setTimeout(grab, 1200);
+        };
         probe.onerror = () => finish(null);
         probe.src = url;
+      }
+    });
+  }
+
+  // Miniatura pra grade da aba "Mídia". Maior lado em THUMB_MAX_PX, JPEG -
+  // 20-60KB no lugar dos 1-12MB do arquivo original, que é a diferença
+  // entre a grade abrir na hora e a grade derrubar a conexão.
+  const THUMB_MAX_PX = 400;
+
+  function drawThumb(source, width, height) {
+    return new Promise((resolve) => {
+      try {
+        const scale = Math.min(1, THUMB_MAX_PX / Math.max(width, height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(width * scale));
+        canvas.height = Math.max(1, Math.round(height * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return resolve(null);
+        ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+        // toBlob é assíncrono e pode chamar de volta com null; o canvas
+        // também fica "tainted" (e lança) se a origem não for same-origin,
+        // daí o try/catch em volta de tudo.
+        canvas.toBlob((blob) => resolve(blob || null), 'image/jpeg', 0.72);
+      } catch (e) {
+        resolve(null);
       }
     });
   }
@@ -1888,16 +2313,23 @@
       uploadProgress.textContent = files.length > 1 ? `Enviando ${i + 1} de ${files.length}...` : `Enviando ${file.name}...`;
       uploadProgress.classList.remove('hidden');
 
-      const dims = await readMediaDimensions(file);
+      const meta = await readMediaMeta(file);
 
       const form = new FormData();
       form.append('file', file);
       form.append('sender', sender);
       if (i === 0 && replyToId) form.append('replyToId', replyToId);
       if (wantsEphemeral) form.append('ephemeral', '1');
-      if (dims) {
-        form.append('width', String(dims.width));
-        form.append('height', String(dims.height));
+      if (meta) {
+        form.append('width', String(meta.width));
+        form.append('height', String(meta.height));
+        // Visualização única não ganha miniatura: uma thumb persistente
+        // sobreviveria aos 10s e furaria o sentido inteiro do recurso. O
+        // servidor recusa de novo por conta própria, isto aqui só evita
+        // mandar os bytes à toa.
+        if (meta.thumb && !wantsEphemeral) {
+          form.append('thumb', meta.thumb, 'thumb.jpg');
+        }
       }
 
       try {
@@ -1936,7 +2368,10 @@
 
     try {
       const res = await fetch(api('/api/clear'), { method: 'POST' });
-      if (res.ok) resetMessagesView();
+      if (res.ok) {
+        resetMessagesView();
+        resetMediaPanel();
+      }
     } catch (err) {
       // ignora — a conversa simplesmente continua como estava
     }
