@@ -23,6 +23,10 @@ const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '300', 10);
 // seconds - production always gets the real default.
 const EPHEMERAL_TTL_MS = parseInt(process.env.EPHEMERAL_TTL_MS || '10000', 10);
 
+// Conjunto fixo de reações (estilo WhatsApp - sem teclado de emoji). Mantém
+// em sincronia com REACTION_EMOJIS em public/app.js.
+const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '🔥'];
+
 if (!ROOM_SLUG || ROOM_SLUG.length < 16) {
   console.error('ROOM_SLUG ausente ou muito curto. Configure um valor aleatorio e longo em .env');
   process.exit(1);
@@ -608,6 +612,42 @@ roomRouter.post('/api/messages/:id/delete', requireAuth, (req, res) => {
   }
 });
 
+// Reação a uma mensagem (❤️ 👍 😂 😮 😢 🔥). Uma reação por pessoa por
+// mensagem, com toggle: reagir com o mesmo emoji remove; com outro, troca.
+// Mesmo modelo de confiança do "apagar" - o servidor confia no requesterName
+// que o cliente manda (sala privada de 2 pessoas).
+roomRouter.post('/api/messages/:id/react', requireAuth, express.json(), (req, res) => {
+  const { requesterName, emoji } = req.body || {};
+  if (!requesterName || !String(requesterName).trim() || !REACTION_EMOJIS.includes(emoji)) {
+    return res.status(400).json({ error: 'invalid' });
+  }
+  try {
+    const data = loadWithSessionKey(req);
+    const msg = data.messages.find((m) => m.id === req.params.id);
+    if (!msg) return res.status(404).json({ error: 'not_found' });
+    if (msg.deleted) return res.json({ ok: true, message: msg });
+
+    const name = String(requesterName).trim();
+    if (!Array.isArray(msg.reactions)) msg.reactions = [];
+    const i = msg.reactions.findIndex((r) => r.sender === name);
+    if (i >= 0 && msg.reactions[i].emoji === emoji) {
+      msg.reactions.splice(i, 1);
+    } else if (i >= 0) {
+      msg.reactions[i] = { sender: name, emoji, ts: Date.now() };
+    } else {
+      msg.reactions.push({ sender: name, emoji, ts: Date.now() });
+    }
+    if (msg.reactions.length === 0) delete msg.reactions;
+
+    store.persist(req.session.key, data);
+    bus.emit('message-reacted', { id: msg.id, reactions: msg.reactions || [] });
+    res.json({ ok: true, message: msg });
+  } catch (e) {
+    console.error(e);
+    res.status(401).json({ error: 'unauthenticated' });
+  }
+});
+
 roomRouter.post('/api/clear', requireAuth, (req, res) => {
   try {
     store.clearAll(req.session.key);
@@ -693,6 +733,13 @@ roomRouter.get('/api/stream', requireAuth, (req, res) => {
   };
   bus.on('message-updated', onMessageUpdated);
 
+  // Alguém reagiu (ou removeu a reação de) uma mensagem - patch parcial na
+  // bolha já renderizada, mesma ideia do message-updated acima.
+  const onReacted = (payload) => {
+    res.write(`event: message-reacted\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+  bus.on('message-reacted', onReacted);
+
   onlineConnections.set(connId, myPresenceName);
   broadcastPresence();
 
@@ -708,6 +755,7 @@ roomRouter.get('/api/stream', requireAuth, (req, res) => {
     bus.off('message-viewed', onViewed);
     bus.off('presence', onPresence);
     bus.off('message-updated', onMessageUpdated);
+    bus.off('message-reacted', onReacted);
   });
 });
 
@@ -736,11 +784,14 @@ roomRouter.get('/api/export', requireAuth, (req, res) => {
 
   const lines = data.messages.map((m) => {
     const when = new Date(m.ts).toLocaleString('pt-BR');
-    if (m.type === 'text') return `[${when}] ${m.sender}: ${m.text}`;
+    const reactions = (m.reactions && m.reactions.length)
+      ? ` [reações: ${m.reactions.map((r) => `${r.emoji} ${r.sender}`).join(', ')}]`
+      : '';
+    if (m.type === 'text') return `[${when}] ${m.sender}: ${m.text}${reactions}`;
     if (m.expiredEphemeral) return `[${when}] ${m.sender}: (mídia de visualização única, expirada)`;
-    if (m.ephemeral) return `[${when}] ${m.sender}: (${m.type}, visualização única - não incluída no backup)`;
+    if (m.ephemeral) return `[${when}] ${m.sender}: (${m.type}, visualização única - não incluída no backup)${reactions}`;
     if (m.deleted) return `[${when}] ${m.sender}: (mensagem apagada por ${m.deletedBy || m.sender})`;
-    return `[${when}] ${m.sender}: (${m.type}) ${m.filename || m.mediaId}`;
+    return `[${when}] ${m.sender}: (${m.type}) ${m.filename || m.mediaId}${reactions}`;
   });
   archive.append(lines.join('\n'), { name: 'conversa.txt' });
 

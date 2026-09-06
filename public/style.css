@@ -1099,6 +1099,74 @@ body::before {
 .msg-menu-item.is-danger svg { color: var(--danger); }
 .msg-menu-item.is-danger:active { background: rgba(224,104,90,0.12); }
 
+/* Barra de reação no topo do menu de contexto: 6 emojis fixos. */
+.msg-menu-reactions {
+  display: flex;
+  gap: 2px;
+  padding: 4px 2px 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.reaction-pick {
+  flex: 1;
+  font: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+  transition: background-color .1s ease, transform .1s ease;
+}
+.reaction-pick:hover { background: rgba(255,255,255,0.08); }
+.reaction-pick:active { background: rgba(255,255,255,0.12); transform: scale(0.92); }
+.reaction-pick.is-mine { background: var(--bubble-me); }
+
+/* Chips de reação: sobrepõem um pouquinho a borda de baixo do balão (estilo
+   WhatsApp) - margin-top negativo puxa pra cima, z-index deixa por cima. O
+   lado é o OPOSTO ao do timestamp flutuante (esquerda no meu balão, direita
+   no da outra pessoa) pra não cobrir a hora. */
+.msg-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: -11px;
+  position: relative;
+  z-index: 2;
+}
+.msg-row.me .msg-reactions { align-self: flex-start; margin-left: 10px; }
+.msg-row.them .msg-reactions { align-self: flex-end; margin-right: 10px; }
+.reaction-chip {
+  display: inline-flex;
+  font: inherit;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  font-size: 14px;
+  line-height: 1.5;
+  border-radius: 999px;
+  background: var(--card-2);
+  border: 1px solid var(--bg-1);
+  box-shadow: var(--shadow-1);
+  color: var(--ink);
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+}
+.reaction-chip.mine { border-color: var(--accent); }
+
 /* ---- confirm modal ---- */
 .confirm-overlay {
   position: fixed;

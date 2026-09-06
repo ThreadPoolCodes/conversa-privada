@@ -75,6 +75,11 @@
   const msgMenuReplyBtn = document.getElementById('msg-menu-reply');
   const msgMenuCopyBtn = document.getElementById('msg-menu-copy');
   const msgMenuDelBtn = document.getElementById('msg-menu-delete');
+  const reactionPicks = msgMenu.querySelectorAll('.reaction-pick');
+
+  // Conjunto fixo de reações. Mantém em sincronia com REACTION_EMOJIS em
+  // server.js (o servidor rejeita qualquer emoji fora dessa lista).
+  const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '🔥'];
 
   // The access code field is masked via -webkit-text-security instead of
   // type="password" (see style.css for why: it's the one lever left
@@ -260,6 +265,14 @@
     // "Copiar" só faz sentido em texto.
     msgMenuCopyBtn.classList.toggle('hidden', m.type !== 'text' || !m.text);
 
+    // Barra de reação: destaca o emoji com que EU já reagi (se reagi). Fica
+    // visível pra qualquer mensagem não apagada - openMessageMenu já saiu
+    // acima em m.deleted.
+    const myReaction = (m.reactions || []).find((r) => r.sender === myName());
+    reactionPicks.forEach((b) => {
+      b.classList.toggle('is-mine', !!myReaction && b.dataset.emoji === myReaction.emoji);
+    });
+
     // Mostra antes de medir (offsetWidth/Height só valem com o elemento no
     // fluxo). A leitura de offsetWidth logo abaixo também força um reflow, o
     // que faz a transição de entrada (.is-in) animar de verdade.
@@ -341,6 +354,15 @@
     const id = activeMenuMsgId;
     closeMessageMenu();           // fecha antes: askConfirm assume a tela
     if (id) handleDeleteClick(id);
+  });
+
+  reactionPicks.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = activeMenuMsgId;
+      const emoji = btn.dataset.emoji;
+      closeMessageMenu();
+      if (id) sendReaction(id, emoji);
+    });
   });
 
   // ---- gatilho 1: clique direito (desktop / mouse) ----
@@ -910,6 +932,82 @@
     if (wasNearBottom) scrollToBottom();
   }
 
+  // ---------------------------------------------------------------------
+  // Reações (❤️ 👍 😂 😮 😢 🔥)
+  //
+  // Uma reação por pessoa por mensagem, com toggle: reagir com o mesmo
+  // emoji remove, com outro troca. A escolha sai da barra no topo do
+  // #msg-menu ou de um toque no próprio chip embaixo do balão. A UI
+  // atualiza pelo SSE "message-reacted" (igual a apagar/enviar), não pela
+  // resposta do fetch. A identidade é myName(), o mesmo critério de lado
+  // da bolha e do requesterName usado em apagar/visualização única.
+  // ---------------------------------------------------------------------
+  async function sendReaction(id, emoji) {
+    if (!REACTION_EMOJIS.includes(emoji)) return;
+    if (!myName()) {
+      nameInput.focus();
+      return;
+    }
+    try {
+      const res = await fetch(api(`/api/messages/${id}/react`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requesterName: myName(), emoji }),
+      });
+      if (!res.ok) toast('Não foi possível reagir a essa mensagem.');
+    } catch (err) {
+      // hiccup de rede — a reação simplesmente não vai
+    }
+  }
+
+  // Agrega o array m.reactions ([{ sender, emoji, ts }]) por emoji,
+  // preservando a ordem da 1ª aparição, e devolve o <div.msg-reactions>
+  // com um chip por emoji. Tocar um chip alterna aquela reação (re-toque
+  // no meu próprio emoji remove, igual ao WhatsApp).
+  function buildReactions(m) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg-reactions';
+    const order = [];
+    const byEmoji = new Map();
+    for (const r of m.reactions || []) {
+      if (!byEmoji.has(r.emoji)) {
+        byEmoji.set(r.emoji, { count: 0, mine: false });
+        order.push(r.emoji);
+      }
+      const agg = byEmoji.get(r.emoji);
+      agg.count += 1;
+      if (r.sender === myName()) agg.mine = true;
+    }
+    for (const emoji of order) {
+      const agg = byEmoji.get(emoji);
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `reaction-chip${agg.mine ? ' mine' : ''}`;
+      chip.textContent = agg.count > 1 ? `${emoji} ${agg.count}` : emoji;
+      chip.addEventListener('click', () => sendReaction(m.id, emoji));
+      wrap.appendChild(chip);
+    }
+    return wrap;
+  }
+
+  // Alguém reagiu (ou desfez) enquanto a bolha já estava na tela (SSE
+  // "message-reacted"): troca o <div.msg-reactions> em vez de re-renderizar
+  // a mensagem inteira. Mesma ideia de applyLinkPreview.
+  function applyReactions(id, reactions) {
+    const row = messagesEl.querySelector(`[data-id="${id}"]`);
+    if (!row) return;
+    const body = row.querySelector('.msg-body');
+    if (!body) return;
+    const existing = body.querySelector('.msg-reactions');
+    if (existing) existing.remove();
+    if (reactions && reactions.length) {
+      const wasNearBottom = isNearBottom();
+      const m = loadedMessages.find((x) => x.id === id) || { id, reactions };
+      body.appendChild(buildReactions({ ...m, reactions }));
+      if (wasNearBottom) scrollToBottom();
+    }
+  }
+
   function buildBubbleContent(bubble, m) {
     if (m.type === 'text') {
       // append (not bubble.textContent=) so we don't wipe out a reply-quote
@@ -1173,6 +1271,14 @@
       buildBubbleContent(bubble, m);
     }
     body.appendChild(bubble);
+
+    // Chips de reação colados embaixo do balão (fora do .bubble, no
+    // .msg-body - não mexem no .msg-time flutuante nem na lógica de
+    // esconder timestamp de grupo). rerenderLoadedMessages redesenha por
+    // aqui, então nada se perde ao paginar pra trás / trocar de nome.
+    if (!m.deleted && m.reactions && m.reactions.length) {
+      body.appendChild(buildReactions(m));
+    }
 
     // As ações da mensagem (Responder / Copiar / Apagar) não vivem mais como
     // botões fixos embaixo do balão - agora saem no #msg-menu, aberto por
@@ -1500,6 +1606,11 @@
       const { id, linkPreview } = JSON.parse(evt.data);
       patchLoadedMessage(id, { linkPreview });
       applyLinkPreview(id, linkPreview);
+    });
+    es.addEventListener('message-reacted', (evt) => {
+      const { id, reactions } = JSON.parse(evt.data);
+      patchLoadedMessage(id, { reactions });
+      applyReactions(id, reactions);
     });
     es.addEventListener('message', (evt) => {
       // Only auto-follow to the new message if the person was already at
