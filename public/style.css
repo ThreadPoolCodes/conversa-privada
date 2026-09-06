@@ -1136,6 +1136,12 @@ body::before {
   -webkit-appearance: none;
   appearance: none;
   touch-action: manipulation;
+  /* O toque longo aqui é NOSSO gesto (abre o menu do tile). Sem isso o iOS
+     abre a folha nativa de "Salvar imagem" por cima, e o Android/desktop
+     começa a selecionar. Mesma proteção que .bubble img já tinha. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
   transition: transform .1s cubic-bezier(.32,.72,0,1), opacity .1s ease;
 }
 .media-tile:active { transform: scale(0.96); opacity: 0.85; }
@@ -1146,6 +1152,9 @@ body::before {
   object-fit: cover;
   display: block;
   opacity: 0;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
   transition: opacity .18s ease;
 }
 /* Só aparece depois do load pra não piscar o alt/quadro vazio no meio do

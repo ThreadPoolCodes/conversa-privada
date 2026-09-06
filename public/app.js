@@ -81,9 +81,11 @@
   const scrollBottomBtn = document.getElementById('scroll-bottom-btn');
   const msgMenu = document.getElementById('msg-menu');
   const msgMenuBackdrop = document.getElementById('msg-menu-backdrop');
+  const msgMenuGotoBtn = document.getElementById('msg-menu-goto');
   const msgMenuReplyBtn = document.getElementById('msg-menu-reply');
   const msgMenuCopyBtn = document.getElementById('msg-menu-copy');
   const msgMenuDelBtn = document.getElementById('msg-menu-delete');
+  const msgMenuReactions = document.getElementById('msg-menu-reactions');
   const reactionPicks = msgMenu.querySelectorAll('.reaction-pick');
 
   // Conjunto fixo de reações. Mantém em sincronia com REACTION_EMOJIS em
@@ -166,18 +168,74 @@
   }
   replyBarCancel.addEventListener('click', clearReplyingTo);
 
-  function scrollToMessage(id) {
+  // opts.smooth (padrão true) existe pro salto de longe: animar a rolagem por
+  // cima de centenas de linhas recém-renderizadas fica lento e sacudido, então
+  // jumpToMessage pede 'auto' e cai direto no lugar.
+  function scrollToMessage(id, opts) {
     const row = messagesEl.querySelector(`[data-id="${id}"]`);
     if (!row) {
       toast('Mensagem original nao esta mais visivel.');
       return;
     }
-    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const smooth = !opts || opts.smooth !== false;
+    row.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'center' });
     const bubble = row.querySelector('.bubble');
     if (bubble) {
       bubble.classList.add('flash-highlight');
       setTimeout(() => bubble.classList.remove('flash-highlight'), 1100);
     }
+  }
+
+  // "Ir para a mensagem". Diferente do scrollToMessage, que só olha o DOM e
+  // desiste com um toast, este busca no servidor quando a mensagem está fora do
+  // lote carregado - o caso normal vindo da aba Mídia, onde a grade mostra
+  // meses de foto mas o chat só carregou as PAGE_SIZE mais novas.
+  //
+  // O ?from= devolve tudo daquela mensagem até a MAIS NOVA (ver a rota em
+  // server.js): loadedMessages continua sendo um sufixo terminando na última
+  // mensagem, que é o que o append do SSE, o loadOlderMessages e o botão "ir
+  // pro fim" assumem. Uma janela centrada no alvo quebraria os três.
+  async function jumpToMessage(id) {
+    if (messagesEl.querySelector(`[data-id="${id}"]`)) {
+      scrollToMessage(id);
+      return;
+    }
+    let messages, hasMore;
+    try {
+      const res = await fetch(api(`/api/messages?from=${encodeURIComponent(id)}`));
+      if (!res.ok) throw new Error('jump failed');
+      ({ messages, hasMore } = await res.json());
+    } catch (e) {
+      toast('Mensagem original nao esta mais visivel.');
+      return;
+    }
+    if (!messages || !messages.length) {
+      toast('Mensagem original nao esta mais visivel.');
+      return;
+    }
+    // Mesmo par de guardas de loadMessages: silencia a paginação por scroll
+    // durante o re-render (o scrollTop baixo pós-salto dispararia
+    // loadOlderMessages na hora) e a libera alguns frames depois.
+    messagesReady = false;
+    loadedMessages = messages.slice();
+    hasMoreOlder = !!hasMore;
+    // clearRenderedRows + render do zero, e não rerenderLoadedMessages: aquele
+    // ancora na primeira linha visível pra PRESERVAR a posição de leitura, que
+    // é exatamente o oposto do que um salto quer. Uma resposta em andamento na
+    // barra do composer é deixada em paz de propósito - saltar e responder são
+    // ações independentes.
+    clearRenderedRows();
+    loadedMessages.forEach(renderMessage);
+    scrollToMessage(id, { smooth: false });
+    updateEmptyState();
+    updateScrollBtn();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      // Mídia antiga sem width/height salvos reflui depois do primeiro paint e
+      // empurra o alvo; re-ancora uma vez com o layout já assentado.
+      scrollToMessage(id, { smooth: false });
+      updateScrollBtn();
+      messagesReady = true;
+    }));
   }
 
   let toastTimer = null;
@@ -240,23 +298,32 @@
   }
 
   // ---------------------------------------------------------------------
-  // Menu de contexto da mensagem (Responder / Copiar / Apagar)
+  // Menu de contexto (Responder / Copiar / Apagar / Ir para a mensagem)
   //
   // Antes cada balão carregava dois botõezinhos fixos embaixo dele - o jeito
   // mais rápido de um chat na web parecer página, não app. Agora as mesmas
   // ações vivem num menuzinho flutuante, aberto pelo gesto nativo de cada
   // plataforma:
-  //   - mouse/desktop: clique direito (evento 'contextmenu') no balão;
-  //   - toque:         toque longo (~480ms) no balão.
-  // Os dois abrem exatamente o mesmo #msg-menu. O id da mensagem sai do
-  // dataset.id da .msg-row; o objeto completo (que setReplyingTo/Copiar
-  // precisam) é recuperado de loadedMessages. "Copiar" só aparece em
-  // mensagem de texto.
+  //   - mouse/desktop: clique direito (evento 'contextmenu');
+  //   - toque:         toque longo (~480ms).
+  // Os dois abrem exatamente o mesmo #msg-menu, a partir de DOIS lugares:
+  //   - modo 'chat':  um balão na conversa. O id sai do dataset.id da
+  //     .msg-row e o objeto completo vem de loadedMessages. Mostra reações,
+  //     Responder, Copiar (só texto) e Apagar.
+  //   - modo 'media': um tile da aba Mídia. O id sai do dataset.id do próprio
+  //     tile - e é só o id que importa aqui, porque a única ação é Ir para a
+  //     mensagem, que não precisa do objeto (a mensagem quase nunca está em
+  //     loadedMessages: a grade cobre meses e o chat carrega só as PAGE_SIZE
+  //     mais novas).
+  // showMenu() é o miolo comum: posiciona e registra os dismissers. Quem abre
+  // só decide quais itens aparecem.
   // ---------------------------------------------------------------------
   const LONG_PRESS_MS = 480;
   const LONG_PRESS_MOVE_TOL = 10; // px de folga antes de virar "isso é scroll"
 
   let activeMenuMsgId = null;
+  let activeMenuMode = 'chat';      // 'chat' | 'media'
+  let activeMenuScrollEl = null;    // qual scroller fecha o menu ao rolar
 
   function onMenuKey(e) {
     if (e.key === 'Escape') closeMessageMenu();
@@ -268,11 +335,13 @@
     // Re-disparo em cima do mesmo balão (alguns Android disparam 'contextmenu'
     // E o nosso timer de toque longo quase juntos): não reposiciona, ignora.
     if (activeMenuMsgId === id) return;
-    closeMessageMenu();
-    activeMenuMsgId = id;
 
     // "Copiar" só faz sentido em texto.
     msgMenuCopyBtn.classList.toggle('hidden', m.type !== 'text' || !m.text);
+    msgMenuGotoBtn.classList.add('hidden');   // já estamos na conversa
+    msgMenuReplyBtn.classList.remove('hidden');
+    msgMenuDelBtn.classList.remove('hidden');
+    msgMenuReactions.classList.remove('hidden');
 
     // Barra de reação: destaca o emoji com que EU já reagi (se reagi). Fica
     // visível pra qualquer mensagem não apagada - openMessageMenu já saiu
@@ -281,6 +350,34 @@
     reactionPicks.forEach((b) => {
       b.classList.toggle('is-mine', !!myReaction && b.dataset.emoji === myReaction.emoji);
     });
+
+    showMenu(id, 'chat', at, messagesEl);
+  }
+
+  // Menu de um tile da aba Mídia. Por enquanto uma ação só: as outras ou não
+  // fazem sentido numa grade (Copiar) ou pedem uma confirmação destrutiva que
+  // não combina com o gesto rápido daqui (Apagar).
+  function openMediaTileMenu(item, at) {
+    if (!item) return;
+    if (activeMenuMsgId === item.id) return;
+
+    msgMenuGotoBtn.classList.remove('hidden');
+    msgMenuReplyBtn.classList.add('hidden');
+    msgMenuCopyBtn.classList.add('hidden');
+    msgMenuDelBtn.classList.add('hidden');
+    msgMenuReactions.classList.add('hidden');
+
+    showMenu(item.id, 'media', at, mediaScroll);
+  }
+
+  // Miolo comum aos dois modos: posiciona o cartão dentro da viewport visível
+  // e registra os dismissers. scrollEl é o container cuja rolagem fecha o menu
+  // (a lista de mensagens ou a grade de mídia).
+  function showMenu(id, mode, at, scrollEl) {
+    closeMessageMenu();
+    activeMenuMsgId = id;
+    activeMenuMode = mode;
+    activeMenuScrollEl = scrollEl;
 
     // Mostra antes de medir (offsetWidth/Height só valem com o elemento no
     // fluxo). A leitura de offsetWidth logo abaixo também força um reflow, o
@@ -315,7 +412,7 @@
     msgMenu.classList.add('is-in');
 
     document.addEventListener('keydown', onMenuKey);
-    messagesEl.addEventListener('scroll', closeMessageMenu, { passive: true });
+    scrollEl.addEventListener('scroll', closeMessageMenu, { passive: true });
     window.addEventListener('resize', closeMessageMenu);
     if (vv) vv.addEventListener('resize', closeMessageMenu);
   }
@@ -327,7 +424,8 @@
     msgMenu.classList.remove('is-in');
     msgMenuBackdrop.classList.add('hidden');
     document.removeEventListener('keydown', onMenuKey);
-    messagesEl.removeEventListener('scroll', closeMessageMenu);
+    if (activeMenuScrollEl) activeMenuScrollEl.removeEventListener('scroll', closeMessageMenu);
+    activeMenuScrollEl = null;
     window.removeEventListener('resize', closeMessageMenu);
     if (window.visualViewport) window.visualViewport.removeEventListener('resize', closeMessageMenu);
   }
@@ -342,6 +440,12 @@
   // Clique direito em cima do próprio menu não abre o menu nativo do browser.
   msgMenu.addEventListener('contextmenu', (e) => e.preventDefault());
 
+  msgMenuGotoBtn.addEventListener('click', () => {
+    const id = activeMenuMsgId;
+    closeMessageMenu();
+    closeMediaPanel();
+    if (id) jumpToMessage(id);
+  });
   msgMenuReplyBtn.addEventListener('click', () => {
     const m = loadedMessages.find((x) => x.id === activeMenuMsgId);
     closeMessageMenu();
@@ -374,78 +478,97 @@
     });
   });
 
-  // ---- gatilho 1: clique direito (desktop / mouse) ----
-  messagesEl.addEventListener('contextmenu', (e) => {
-    const bubble = e.target.closest('.bubble');
-    if (!bubble || bubble.classList.contains('deleted')) return;
-    const row = bubble.closest('.msg-row');
-    if (!row) return;
-    e.preventDefault();
-    cancelLongPress();
-    openMessageMenu(row.dataset.id, { point: { x: e.clientX, y: e.clientY } });
-  });
+  // ---- os dois gatilhos ----
+  // Clique direito (desktop) e toque longo (~480ms) abrem o mesmo menu. A
+  // mecânica é idêntica no chat e na grade de mídia - só muda o que conta como
+  // alvo - então mora aqui uma vez só: duplicar as regras de tolerância de
+  // movimento, cancelamento e supressão do click fantasma é o caminho mais
+  // curto pras duas versões divergirem no primeiro ajuste de iOS.
+  //
+  // `resolve(e)` devolve { el, id } pro alvo sob o evento, ou null se aquele
+  // ponto não é um alvo válido. `open(id, at)` abre o menu do modo certo.
+  function attachMenuGestures(rootEl, scrollEl, resolve, open) {
+    let lpTimer = null;
+    let lpStartX = 0;
+    let lpStartY = 0;
+    let suppressClickUntil = 0;
 
-  // ---- gatilho 2: toque longo ----
-  // Timer que dispara sozinho se o dedo ficar ~480ms parado sobre o balão.
-  // Cancela em movimento > tolerância, pointerup/cancel e scroll da lista.
-  // Ao disparar: vibra de leve, abre o menu ancorado no balão e "engole" o
-  // click sintético seguinte pra não abrir lightbox/arquivo/ephemeral nem
-  // rodar o blur-de-fundo.
-  let lpTimer = null;
-  let lpStartX = 0;
-  let lpStartY = 0;
-  let suppressClickUntil = 0;
-
-  function cancelLongPress() {
-    if (lpTimer !== null) {
-      clearTimeout(lpTimer);
-      lpTimer = null;
+    function cancelLongPress() {
+      if (lpTimer !== null) {
+        clearTimeout(lpTimer);
+        lpTimer = null;
+      }
     }
+
+    rootEl.addEventListener('contextmenu', (e) => {
+      const hit = resolve(e);
+      if (!hit) return;
+      e.preventDefault();
+      cancelLongPress();
+      open(hit.id, { point: { x: e.clientX, y: e.clientY } });
+    });
+
+    // Timer que dispara sozinho se o dedo ficar ~480ms parado sobre o alvo.
+    // Cancela em movimento > tolerância, pointerup/cancel e scroll. Ao
+    // disparar: vibra de leve, abre o menu ancorado no alvo e "engole" o click
+    // sintético seguinte.
+    rootEl.addEventListener('pointerdown', (e) => {
+      if (e.button && e.button !== 0) return;        // ignora botão direito/meio
+      const hit = resolve(e);
+      if (!hit) return;
+      lpStartX = e.clientX;
+      lpStartY = e.clientY;
+      cancelLongPress();
+      lpTimer = setTimeout(() => {
+        lpTimer = null;
+        if (navigator.vibrate) navigator.vibrate(8);
+        suppressClickUntil = Date.now() + 700;
+        open(hit.id, {
+          rect: hit.el.getBoundingClientRect(),
+          point: { x: lpStartX, y: lpStartY },
+        });
+      }, LONG_PRESS_MS);
+    }, { passive: true });
+
+    rootEl.addEventListener('pointermove', (e) => {
+      if (lpTimer === null) return;
+      if (Math.abs(e.clientX - lpStartX) > LONG_PRESS_MOVE_TOL ||
+          Math.abs(e.clientY - lpStartY) > LONG_PRESS_MOVE_TOL) {
+        cancelLongPress();
+      }
+    }, { passive: true });
+
+    rootEl.addEventListener('pointerup', cancelLongPress, { passive: true });
+    rootEl.addEventListener('pointercancel', cancelLongPress, { passive: true });
+    scrollEl.addEventListener('scroll', cancelLongPress, { passive: true });
+
+    // Captura: roda ANTES dos handlers de click do alvo - no chat o img
+    // (lightbox), o file-bubble (window.open), o ephemeral
+    // (openEphemeralMessage) e o blur-de-fundo em #messages; na grade o
+    // openLightbox do tile. Se o click é o fantasma logo depois de um toque
+    // longo, mata ele aqui.
+    rootEl.addEventListener('click', (e) => {
+      if (Date.now() < suppressClickUntil && resolve(e)) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    }, true);
   }
 
-  messagesEl.addEventListener('pointerdown', (e) => {
-    if (e.button && e.button !== 0) return;          // ignora botão direito/meio
+  attachMenuGestures(messagesEl, messagesEl, (e) => {
     const bubble = e.target.closest('.bubble');
-    if (!bubble || bubble.classList.contains('deleted')) return;
-    if (e.target.closest('audio, video')) return;    // controles nativos precisam do gesto
+    if (!bubble || bubble.classList.contains('deleted')) return null;
+    // Controles nativos de áudio/vídeo precisam do gesto pra eles.
+    if (e.type === 'pointerdown' && e.target.closest('audio, video')) return null;
     const row = bubble.closest('.msg-row');
-    if (!row) return;
-    lpStartX = e.clientX;
-    lpStartY = e.clientY;
-    cancelLongPress();
-    lpTimer = setTimeout(() => {
-      lpTimer = null;
-      if (navigator.vibrate) navigator.vibrate(8);
-      suppressClickUntil = Date.now() + 700;
-      openMessageMenu(row.dataset.id, {
-        rect: bubble.getBoundingClientRect(),
-        point: { x: lpStartX, y: lpStartY },
-      });
-    }, LONG_PRESS_MS);
-  }, { passive: true });
+    if (!row) return null;
+    return { el: bubble, id: row.dataset.id };
+  }, openMessageMenu);
 
-  messagesEl.addEventListener('pointermove', (e) => {
-    if (lpTimer === null) return;
-    if (Math.abs(e.clientX - lpStartX) > LONG_PRESS_MOVE_TOL ||
-        Math.abs(e.clientY - lpStartY) > LONG_PRESS_MOVE_TOL) {
-      cancelLongPress();
-    }
-  }, { passive: true });
-
-  messagesEl.addEventListener('pointerup', cancelLongPress, { passive: true });
-  messagesEl.addEventListener('pointercancel', cancelLongPress, { passive: true });
-  messagesEl.addEventListener('scroll', cancelLongPress, { passive: true });
-
-  // Captura: roda ANTES dos handlers de click do img (lightbox), do
-  // file-bubble (window.open), do ephemeral (openEphemeralMessage) e do
-  // blur-de-fundo em #messages. Se o click é o fantasma logo depois de um
-  // toque longo, mata ele aqui.
-  messagesEl.addEventListener('click', (e) => {
-    if (Date.now() < suppressClickUntil && e.target.closest('.bubble')) {
-      e.stopPropagation();
-      e.preventDefault();
-    }
-  }, true);
+  attachMenuGestures(mediaGrid, mediaScroll, (e) => {
+    const tile = e.target.closest('.media-tile');
+    return tile ? { el: tile, id: tile.dataset.id } : null;
+  }, (id, at) => openMediaTileMenu(mediaItems.find((it) => it.id === id), at));
 
   // Secret "você me ama?" counter. Typing (and sending) a variant of that
   // question doesn't post a real message - it's intercepted client-side
@@ -1297,7 +1420,10 @@
         qSnippet.textContent = m.replyTo.snippet;
         quote.appendChild(qSender);
         quote.appendChild(qSnippet);
-        quote.addEventListener('click', () => scrollToMessage(m.replyTo.id));
+        // jumpToMessage e não scrollToMessage: antes, clicar numa citação de
+        // mensagem fora do lote carregado só dava o toast de "nao esta mais
+        // visivel". Com o ?from= no lugar, o salto funciona de verdade.
+        quote.addEventListener('click', () => jumpToMessage(m.replyTo.id));
         bubble.appendChild(quote);
       }
       buildBubbleContent(bubble, m);
@@ -1612,6 +1738,7 @@
   }
 
   function resetMediaPanel() {
+    if (activeMenuMode === 'media') closeMessageMenu();
     mediaGrid.innerHTML = '';
     mediaItems = [];
     mediaCursor = null;
@@ -1642,9 +1769,12 @@
   mediaBtn.addEventListener('click', openMediaPanel);
   mediaBack.addEventListener('click', closeMediaPanel);
 
-  // Escape fecha o de cima primeiro: lightbox, depois o painel.
+  // Escape fecha o de cima primeiro: menu de contexto, lightbox, painel. O
+  // menu já se fecha sozinho pelo onMenuKey dele; o early-return aqui é pra
+  // esse Escape não fechar o painel JUNTO, no mesmo toque.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    if (activeMenuMsgId !== null) return;
     if (!lightbox.classList.contains('hidden')) {
       lightbox.classList.add('hidden');
     } else if (isMediaPanelOpen()) {
@@ -1689,6 +1819,9 @@
   function removeMediaItem(id) {
     const i = mediaItems.findIndex((it) => it.id === id);
     if (i === -1) return;
+    // Menu aberto em cima do tile que a outra pessoa acabou de apagar: fecha
+    // antes de tirar o tile do DOM (mesma guarda de applyDeletedPlaceholder).
+    if (activeMenuMsgId === id) closeMessageMenu();
     mediaItems.splice(i, 1);
     const tile = mediaGrid.querySelector(`.media-tile[data-id="${id}"]`);
     if (tile) tile.remove();

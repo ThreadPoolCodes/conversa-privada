@@ -103,6 +103,19 @@ endpoint, `scheduleExpiry`, and `reconcileEphemeral` in `server.js`:
 
 - **Replies**: `buildReplySnapshot` freezes sender + a short snippet at reply
   time; the quote keeps showing that even if the original is edited/deleted.
+- **Jump to a message** (`?from=<id>` on `/api/messages`, `jumpToMessage` in
+  `app.js`): returns the conversation *tail* — the target message plus
+  `JUMP_CONTEXT_BEFORE` of context above it, through to the newest message —
+  in one response, ignoring `limit`. Going all the way to the end is the whole
+  point: `loadedMessages` on the client is always a suffix ending at the last
+  message, and that invariant is what lets the SSE append, `loadOlderMessages`
+  and the "scroll to bottom" button work without a second `hasMoreNewer`
+  cursor. A window centred on the target would break all three, and a capped
+  batch would leave a hole between it and the newest message. Unknown id →
+  404. Used by the media tab's "Ir para a mensagem" and by the reply-quote
+  click, which before could only toast "não está mais visível" for anything
+  outside the loaded page. `jumpToMessage` deliberately leaves a reply in
+  progress alone — jumping and replying are independent actions.
 - **Delete**: either person can delete any message (2-person trusted room);
   `deletedBy` is recorded and shown on the placeholder.
 - **Link previews**: `scheduleLinkPreview` runs *after* the message is saved and
@@ -179,6 +192,32 @@ the entire decrypted file with no Range support and `no-store`:
   whole feature.
 - Deleting a message unlinks **both** blobs. Thumbnails are derived data, so
   they're excluded from the export zip (which only walks `mediaId`).
+
+### Menu de contexto (`#msg-menu`)
+
+One floating card serves two places, opened by the same gestures (right-click
+on desktop, ~480ms long-press on touch) — `attachMenuGestures` in `app.js`
+wires both roots, so the movement tolerance, scroll cancellation and
+capture-phase suppression of the post-long-press ghost click exist once:
+
+- **chat bubble** (`openMessageMenu`): reactions + Responder + Copiar (text
+  only) + Apagar. The message object comes from `loadedMessages`.
+- **media tile** (`openMediaTileMenu`): Ir para a mensagem, and nothing else
+  for now. It deliberately never looks in `loadedMessages` — the grid spans
+  months while the chat has only the newest `PAGE_SIZE` loaded, so the message
+  usually isn't there. Only the id is needed, and the tile's `data-id` already
+  *is* the message id.
+
+`showMenu(id, mode, at, scrollEl)` is the shared half: positioning and the
+dismissers. `scrollEl` is why it's a parameter — the chat menu closes on
+`#messages` scroll, the tile menu on `#media-scroll`. `#msg-menu` sits at
+z-index 56, already above both the media panel (45) and the lightbox (50).
+
+Two gotchas: the document-level Escape chain (lightbox → panel) has to
+early-return while a menu is open, or one Escape closes the menu *and* the
+panel; and `.media-tile` needs `-webkit-touch-callout: none` (like
+`.bubble img` already had) or iOS pops the native "Salvar imagem" sheet over
+our menu.
 
 ### Decoy / trap password
 

@@ -434,10 +434,34 @@ function buildReplySnapshot(data, replyToId) {
 const MESSAGES_PAGE_DEFAULT = 50;
 const MESSAGES_PAGE_MAX = 200;
 
+// Quantas mensagens de contexto vêm ACIMA do alvo num salto (?from=). Zero
+// deixaria a mensagem colada no topo da lista, e um valor pequeno faria a
+// primeira rolagem pra cima já disparar loadOlderMessages na hora.
+const JUMP_CONTEXT_BEFORE = 20;
+
 roomRouter.get('/api/messages', requireAuth, (req, res) => {
   try {
     const data = loadWithSessionKey(req);
     const all = data.messages;
+
+    // ?from=<id>: salto pra uma mensagem específica ("Ir para a mensagem", na
+    // aba Mídia). Devolve o RABO da conversa a partir dela - da mensagem-alvo
+    // (com JUMP_CONTEXT_BEFORE de contexto acima) até a mais nova, de uma vez.
+    // Ir até o fim é de propósito: loadedMessages no cliente é sempre um
+    // sufixo terminando na última mensagem, e é essa invariante que faz o
+    // append do SSE, o loadOlderMessages e o botão "ir pro fim" funcionarem
+    // sem um segundo cursor "hasMoreNewer" (que não existe). Uma janela
+    // centrada no alvo quebraria os três. Por isso `limit` também não vale
+    // aqui: cortar o lote deixaria um buraco entre ele e a mensagem mais nova.
+    if (req.query.from) {
+      const at = all.findIndex((m) => m.id === String(req.query.from));
+      if (at === -1) return res.status(404).json({ error: 'not_found' });
+      const from = Math.max(0, at - JUMP_CONTEXT_BEFORE);
+      return res.json({
+        messages: all.slice(from).map(sanitizeMessage),
+        hasMore: from > 0,
+      });
+    }
 
     let limit = parseInt(req.query.limit, 10);
     if (!Number.isFinite(limit) || limit <= 0) limit = MESSAGES_PAGE_DEFAULT;
