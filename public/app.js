@@ -31,6 +31,9 @@
   const loginScreen = document.getElementById('login-screen');
   const chatScreen = document.getElementById('chat-screen');
   const decoyScreen = document.getElementById('decoy-screen');
+  const nameScreen = document.getElementById('name-screen');
+  const nameForm = document.getElementById('name-form');
+  const nameScreenInput = document.getElementById('name-screen-input');
   const loginForm = document.getElementById('login-form');
   const codeInput = document.getElementById('code-input');
   const codeRevealBtn = document.getElementById('code-reveal-btn');
@@ -49,6 +52,15 @@
   const lightbox = document.getElementById('lightbox');
   const lightboxContent = document.getElementById('lightbox-content');
   const lightboxClose = document.getElementById('lightbox-close');
+  const mediaBtn = document.getElementById('media-btn');
+  const mediaPanel = document.getElementById('media-panel');
+  const mediaBack = document.getElementById('media-back');
+  const mediaScroll = document.getElementById('media-scroll');
+  const mediaGrid = document.getElementById('media-grid');
+  const mediaSentinel = document.getElementById('media-sentinel');
+  const mediaLoading = document.getElementById('media-loading');
+  const mediaEmpty = document.getElementById('media-empty');
+  const mediaCount = document.getElementById('media-count');
   const confirmOverlay = document.getElementById('confirm-overlay');
   const confirmText = document.getElementById('confirm-text');
   const confirmCancel = document.getElementById('confirm-cancel');
@@ -58,6 +70,7 @@
   const loveClose = document.getElementById('love-close');
   const konamiHeart = document.getElementById('konami-heart');
   const loadingState = document.getElementById('loading-state');
+  const loadingOlderEl = document.getElementById('loading-older');
   const emptyState = document.getElementById('empty-state');
   const toastEl = document.getElementById('toast');
   const presenceDotEl = document.querySelector('.chat-header .dot');
@@ -66,6 +79,18 @@
   const replyBarSnippet = document.getElementById('reply-bar-snippet');
   const replyBarCancel = document.getElementById('reply-bar-cancel');
   const scrollBottomBtn = document.getElementById('scroll-bottom-btn');
+  const msgMenu = document.getElementById('msg-menu');
+  const msgMenuBackdrop = document.getElementById('msg-menu-backdrop');
+  const msgMenuGotoBtn = document.getElementById('msg-menu-goto');
+  const msgMenuReplyBtn = document.getElementById('msg-menu-reply');
+  const msgMenuCopyBtn = document.getElementById('msg-menu-copy');
+  const msgMenuDelBtn = document.getElementById('msg-menu-delete');
+  const msgMenuReactions = document.getElementById('msg-menu-reactions');
+  const reactionPicks = msgMenu.querySelectorAll('.reaction-pick');
+
+  // Conjunto fixo de reações. Mantém em sincronia com REACTION_EMOJIS em
+  // server.js (o servidor rejeita qualquer emoji fora dessa lista).
+  const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '🔥'];
 
   // The access code field is masked via -webkit-text-security instead of
   // type="password" (see style.css for why: it's the one lever left
@@ -143,18 +168,74 @@
   }
   replyBarCancel.addEventListener('click', clearReplyingTo);
 
-  function scrollToMessage(id) {
+  // opts.smooth (padrão true) existe pro salto de longe: animar a rolagem por
+  // cima de centenas de linhas recém-renderizadas fica lento e sacudido, então
+  // jumpToMessage pede 'auto' e cai direto no lugar.
+  function scrollToMessage(id, opts) {
     const row = messagesEl.querySelector(`[data-id="${id}"]`);
     if (!row) {
       toast('Mensagem original nao esta mais visivel.');
       return;
     }
-    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const smooth = !opts || opts.smooth !== false;
+    row.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'center' });
     const bubble = row.querySelector('.bubble');
     if (bubble) {
       bubble.classList.add('flash-highlight');
       setTimeout(() => bubble.classList.remove('flash-highlight'), 1100);
     }
+  }
+
+  // "Ir para a mensagem". Diferente do scrollToMessage, que só olha o DOM e
+  // desiste com um toast, este busca no servidor quando a mensagem está fora do
+  // lote carregado - o caso normal vindo da aba Mídia, onde a grade mostra
+  // meses de foto mas o chat só carregou as PAGE_SIZE mais novas.
+  //
+  // O ?from= devolve tudo daquela mensagem até a MAIS NOVA (ver a rota em
+  // server.js): loadedMessages continua sendo um sufixo terminando na última
+  // mensagem, que é o que o append do SSE, o loadOlderMessages e o botão "ir
+  // pro fim" assumem. Uma janela centrada no alvo quebraria os três.
+  async function jumpToMessage(id) {
+    if (messagesEl.querySelector(`[data-id="${id}"]`)) {
+      scrollToMessage(id);
+      return;
+    }
+    let messages, hasMore;
+    try {
+      const res = await fetch(api(`/api/messages?from=${encodeURIComponent(id)}`));
+      if (!res.ok) throw new Error('jump failed');
+      ({ messages, hasMore } = await res.json());
+    } catch (e) {
+      toast('Mensagem original nao esta mais visivel.');
+      return;
+    }
+    if (!messages || !messages.length) {
+      toast('Mensagem original nao esta mais visivel.');
+      return;
+    }
+    // Mesmo par de guardas de loadMessages: silencia a paginação por scroll
+    // durante o re-render (o scrollTop baixo pós-salto dispararia
+    // loadOlderMessages na hora) e a libera alguns frames depois.
+    messagesReady = false;
+    loadedMessages = messages.slice();
+    hasMoreOlder = !!hasMore;
+    // clearRenderedRows + render do zero, e não rerenderLoadedMessages: aquele
+    // ancora na primeira linha visível pra PRESERVAR a posição de leitura, que
+    // é exatamente o oposto do que um salto quer. Uma resposta em andamento na
+    // barra do composer é deixada em paz de propósito - saltar e responder são
+    // ações independentes.
+    clearRenderedRows();
+    loadedMessages.forEach(renderMessage);
+    scrollToMessage(id, { smooth: false });
+    updateEmptyState();
+    updateScrollBtn();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      // Mídia antiga sem width/height salvos reflui depois do primeiro paint e
+      // empurra o alvo; re-ancora uma vez com o layout já assentado.
+      scrollToMessage(id, { smooth: false });
+      updateScrollBtn();
+      messagesReady = true;
+    }));
   }
 
   let toastTimer = null;
@@ -215,6 +296,279 @@
       confirmOk.addEventListener('click', onOk);
     });
   }
+
+  // ---------------------------------------------------------------------
+  // Menu de contexto (Responder / Copiar / Apagar / Ir para a mensagem)
+  //
+  // Antes cada balão carregava dois botõezinhos fixos embaixo dele - o jeito
+  // mais rápido de um chat na web parecer página, não app. Agora as mesmas
+  // ações vivem num menuzinho flutuante, aberto pelo gesto nativo de cada
+  // plataforma:
+  //   - mouse/desktop: clique direito (evento 'contextmenu');
+  //   - toque:         toque longo (~480ms).
+  // Os dois abrem exatamente o mesmo #msg-menu, a partir de DOIS lugares:
+  //   - modo 'chat':  um balão na conversa. O id sai do dataset.id da
+  //     .msg-row e o objeto completo vem de loadedMessages. Mostra reações,
+  //     Responder, Copiar (só texto) e Apagar.
+  //   - modo 'media': um tile da aba Mídia. O id sai do dataset.id do próprio
+  //     tile - e é só o id que importa aqui, porque a única ação é Ir para a
+  //     mensagem, que não precisa do objeto (a mensagem quase nunca está em
+  //     loadedMessages: a grade cobre meses e o chat carrega só as PAGE_SIZE
+  //     mais novas).
+  // showMenu() é o miolo comum: posiciona e registra os dismissers. Quem abre
+  // só decide quais itens aparecem.
+  // ---------------------------------------------------------------------
+  const LONG_PRESS_MS = 480;
+  const LONG_PRESS_MOVE_TOL = 10; // px de folga antes de virar "isso é scroll"
+
+  let activeMenuMsgId = null;
+  let activeMenuMode = 'chat';      // 'chat' | 'media'
+  let activeMenuScrollEl = null;    // qual scroller fecha o menu ao rolar
+
+  function onMenuKey(e) {
+    if (e.key === 'Escape') closeMessageMenu();
+  }
+
+  function openMessageMenu(id, at) {
+    const m = loadedMessages.find((x) => x.id === id);
+    if (!m || m.deleted) return;
+    // Re-disparo em cima do mesmo balão (alguns Android disparam 'contextmenu'
+    // E o nosso timer de toque longo quase juntos): não reposiciona, ignora.
+    if (activeMenuMsgId === id) return;
+
+    // "Copiar" só faz sentido em texto.
+    msgMenuCopyBtn.classList.toggle('hidden', m.type !== 'text' || !m.text);
+    msgMenuGotoBtn.classList.add('hidden');   // já estamos na conversa
+    msgMenuReplyBtn.classList.remove('hidden');
+    msgMenuDelBtn.classList.remove('hidden');
+    msgMenuReactions.classList.remove('hidden');
+
+    // Barra de reação: destaca o emoji com que EU já reagi (se reagi). Fica
+    // visível pra qualquer mensagem não apagada - openMessageMenu já saiu
+    // acima em m.deleted.
+    const myReaction = (m.reactions || []).find((r) => r.sender === myName());
+    reactionPicks.forEach((b) => {
+      b.classList.toggle('is-mine', !!myReaction && b.dataset.emoji === myReaction.emoji);
+    });
+
+    showMenu(id, 'chat', at, messagesEl);
+  }
+
+  // Menu de um tile da aba Mídia. Por enquanto uma ação só: as outras ou não
+  // fazem sentido numa grade (Copiar) ou pedem uma confirmação destrutiva que
+  // não combina com o gesto rápido daqui (Apagar).
+  function openMediaTileMenu(item, at) {
+    if (!item) return;
+    if (activeMenuMsgId === item.id) return;
+
+    msgMenuGotoBtn.classList.remove('hidden');
+    msgMenuReplyBtn.classList.add('hidden');
+    msgMenuCopyBtn.classList.add('hidden');
+    msgMenuDelBtn.classList.add('hidden');
+    msgMenuReactions.classList.add('hidden');
+
+    showMenu(item.id, 'media', at, mediaScroll);
+  }
+
+  // Miolo comum aos dois modos: posiciona o cartão dentro da viewport visível
+  // e registra os dismissers. scrollEl é o container cuja rolagem fecha o menu
+  // (a lista de mensagens ou a grade de mídia).
+  function showMenu(id, mode, at, scrollEl) {
+    closeMessageMenu();
+    activeMenuMsgId = id;
+    activeMenuMode = mode;
+    activeMenuScrollEl = scrollEl;
+
+    // Mostra antes de medir (offsetWidth/Height só valem com o elemento no
+    // fluxo). A leitura de offsetWidth logo abaixo também força um reflow, o
+    // que faz a transição de entrada (.is-in) animar de verdade.
+    msgMenuBackdrop.classList.remove('hidden');
+    msgMenu.classList.remove('hidden');
+
+    const mw = msgMenu.offsetWidth;
+    const mh = msgMenu.offsetHeight;
+    const vv = window.visualViewport;
+    const vw = (vv && vv.width) || window.innerWidth;
+    const vh = (vv && vv.height) || window.innerHeight;
+    const offX = vv ? vv.offsetLeft : 0;
+    const offY = vv ? vv.offsetTop : 0;
+    const pad = 8;
+
+    // Ponto de origem: coords do clique (clique direito) ou o topo-esquerdo
+    // logo abaixo do balão (toque longo).
+    let x = at.point ? at.point.x : at.rect.left;
+    let y = at.point ? at.point.y : at.rect.bottom + 4;
+
+    // Estourou embaixo → abre pra cima (acima do balão, se veio de rect).
+    if (y + mh + pad > offY + vh) {
+      y = at.rect ? at.rect.top - mh - 4 : y - mh;
+    }
+    // Trava nas bordas da viewport visível (teclado/curva incluídos).
+    x = Math.max(offX + pad, Math.min(x, offX + vw - mw - pad));
+    y = Math.max(offY + pad, Math.min(y, offY + vh - mh - pad));
+
+    msgMenu.style.left = `${x}px`;
+    msgMenu.style.top = `${y}px`;
+    msgMenu.classList.add('is-in');
+
+    document.addEventListener('keydown', onMenuKey);
+    scrollEl.addEventListener('scroll', closeMessageMenu, { passive: true });
+    window.addEventListener('resize', closeMessageMenu);
+    if (vv) vv.addEventListener('resize', closeMessageMenu);
+  }
+
+  function closeMessageMenu() {
+    if (activeMenuMsgId === null) return;
+    activeMenuMsgId = null;
+    msgMenu.classList.add('hidden');
+    msgMenu.classList.remove('is-in');
+    msgMenuBackdrop.classList.add('hidden');
+    document.removeEventListener('keydown', onMenuKey);
+    if (activeMenuScrollEl) activeMenuScrollEl.removeEventListener('scroll', closeMessageMenu);
+    activeMenuScrollEl = null;
+    window.removeEventListener('resize', closeMessageMenu);
+    if (window.visualViewport) window.visualViewport.removeEventListener('resize', closeMessageMenu);
+  }
+
+  msgMenuBackdrop.addEventListener('click', closeMessageMenu);
+  // Um segundo clique direito (agora sobre o backdrop) fecha em vez de reabrir
+  // o menu nativo do navegador.
+  msgMenuBackdrop.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    closeMessageMenu();
+  });
+  // Clique direito em cima do próprio menu não abre o menu nativo do browser.
+  msgMenu.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  msgMenuGotoBtn.addEventListener('click', () => {
+    const id = activeMenuMsgId;
+    closeMessageMenu();
+    closeMediaPanel();
+    if (id) jumpToMessage(id);
+  });
+  msgMenuReplyBtn.addEventListener('click', () => {
+    const m = loadedMessages.find((x) => x.id === activeMenuMsgId);
+    closeMessageMenu();
+    if (m) setReplyingTo(m);
+  });
+  msgMenuCopyBtn.addEventListener('click', () => {
+    const m = loadedMessages.find((x) => x.id === activeMenuMsgId);
+    closeMessageMenu();
+    if (!m || !m.text) return;
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      toast('Cópia não suportada neste navegador.');
+      return;
+    }
+    navigator.clipboard.writeText(m.text)
+      .then(() => toast('Mensagem copiada.'))
+      .catch(() => toast('Não foi possível copiar.'));
+  });
+  msgMenuDelBtn.addEventListener('click', () => {
+    const id = activeMenuMsgId;
+    closeMessageMenu();           // fecha antes: askConfirm assume a tela
+    if (id) handleDeleteClick(id);
+  });
+
+  reactionPicks.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = activeMenuMsgId;
+      const emoji = btn.dataset.emoji;
+      closeMessageMenu();
+      if (id) sendReaction(id, emoji);
+    });
+  });
+
+  // ---- os dois gatilhos ----
+  // Clique direito (desktop) e toque longo (~480ms) abrem o mesmo menu. A
+  // mecânica é idêntica no chat e na grade de mídia - só muda o que conta como
+  // alvo - então mora aqui uma vez só: duplicar as regras de tolerância de
+  // movimento, cancelamento e supressão do click fantasma é o caminho mais
+  // curto pras duas versões divergirem no primeiro ajuste de iOS.
+  //
+  // `resolve(e)` devolve { el, id } pro alvo sob o evento, ou null se aquele
+  // ponto não é um alvo válido. `open(id, at)` abre o menu do modo certo.
+  function attachMenuGestures(rootEl, scrollEl, resolve, open) {
+    let lpTimer = null;
+    let lpStartX = 0;
+    let lpStartY = 0;
+    let suppressClickUntil = 0;
+
+    function cancelLongPress() {
+      if (lpTimer !== null) {
+        clearTimeout(lpTimer);
+        lpTimer = null;
+      }
+    }
+
+    rootEl.addEventListener('contextmenu', (e) => {
+      const hit = resolve(e);
+      if (!hit) return;
+      e.preventDefault();
+      cancelLongPress();
+      open(hit.id, { point: { x: e.clientX, y: e.clientY } });
+    });
+
+    // Timer que dispara sozinho se o dedo ficar ~480ms parado sobre o alvo.
+    // Cancela em movimento > tolerância, pointerup/cancel e scroll. Ao
+    // disparar: vibra de leve, abre o menu ancorado no alvo e "engole" o click
+    // sintético seguinte.
+    rootEl.addEventListener('pointerdown', (e) => {
+      if (e.button && e.button !== 0) return;        // ignora botão direito/meio
+      const hit = resolve(e);
+      if (!hit) return;
+      lpStartX = e.clientX;
+      lpStartY = e.clientY;
+      cancelLongPress();
+      lpTimer = setTimeout(() => {
+        lpTimer = null;
+        if (navigator.vibrate) navigator.vibrate(8);
+        suppressClickUntil = Date.now() + 700;
+        open(hit.id, {
+          rect: hit.el.getBoundingClientRect(),
+          point: { x: lpStartX, y: lpStartY },
+        });
+      }, LONG_PRESS_MS);
+    }, { passive: true });
+
+    rootEl.addEventListener('pointermove', (e) => {
+      if (lpTimer === null) return;
+      if (Math.abs(e.clientX - lpStartX) > LONG_PRESS_MOVE_TOL ||
+          Math.abs(e.clientY - lpStartY) > LONG_PRESS_MOVE_TOL) {
+        cancelLongPress();
+      }
+    }, { passive: true });
+
+    rootEl.addEventListener('pointerup', cancelLongPress, { passive: true });
+    rootEl.addEventListener('pointercancel', cancelLongPress, { passive: true });
+    scrollEl.addEventListener('scroll', cancelLongPress, { passive: true });
+
+    // Captura: roda ANTES dos handlers de click do alvo - no chat o img
+    // (lightbox), o file-bubble (window.open), o ephemeral
+    // (openEphemeralMessage) e o blur-de-fundo em #messages; na grade o
+    // openLightbox do tile. Se o click é o fantasma logo depois de um toque
+    // longo, mata ele aqui.
+    rootEl.addEventListener('click', (e) => {
+      if (Date.now() < suppressClickUntil && resolve(e)) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    }, true);
+  }
+
+  attachMenuGestures(messagesEl, messagesEl, (e) => {
+    const bubble = e.target.closest('.bubble');
+    if (!bubble || bubble.classList.contains('deleted')) return null;
+    // Controles nativos de áudio/vídeo precisam do gesto pra eles.
+    if (e.type === 'pointerdown' && e.target.closest('audio, video')) return null;
+    const row = bubble.closest('.msg-row');
+    if (!row) return null;
+    return { el: bubble, id: row.dataset.id };
+  }, openMessageMenu);
+
+  attachMenuGestures(mediaGrid, mediaScroll, (e) => {
+    const tile = e.target.closest('.media-tile');
+    return tile ? { el: tile, id: tile.dataset.id } : null;
+  }, (id, at) => openMediaTileMenu(mediaItems.find((it) => it.id === id), at));
 
   // Secret "você me ama?" counter. Typing (and sending) a variant of that
   // question doesn't post a real message - it's intercepted client-side
@@ -431,31 +785,64 @@
     konamiHandleToken(zone, now);
   }, { passive: true });
 
-  function resetMessagesView() {
+  // Só limpa o DOM das mensagens e o estado forward-only de renderização
+  // (agrupamento, divisórias de data). NÃO mexe em loadedMessages nem na barra
+  // de resposta - é o que rerenderLoadedMessages usa antes de redesenhar a
+  // lista inteira a partir de loadedMessages.
+  function clearRenderedRows() {
     messagesEl.querySelectorAll('.msg-row, .date-divider').forEach((el) => el.remove());
     renderedIds = new Set();
-    authorSide = new Map();
     lastRow = null;
     lastSender = null;
     lastTs = null;
     lastDateKey = null;
+  }
+
+  function resetMessagesView() {
+    clearRenderedRows();
+    loadedMessages = [];
+    hasMoreOlder = false;
     clearReplyingTo();
+    closeMessageMenu();
     updateEmptyState();
     updateScrollBtn();
   }
 
   const NAME_KEY = 'private-chat:my-name';
   nameInput.value = localStorage.getItem(NAME_KEY) || '';
+  // Trocar de nome muda a identidade do lado do cliente, e a identidade é o
+  // que decide de que lado cada bolha fica (ver `mine` em renderMessage), então
+  // renomear tem que redesenhar a lista - senão as bolhas antigas ficariam do
+  // lado errado até o próximo carregamento.
   nameInput.addEventListener('change', () => {
-    localStorage.setItem(NAME_KEY, nameInput.value.trim());
+    const name = nameInput.value.trim();
+    const previous = localStorage.getItem(NAME_KEY) || '';
+    localStorage.setItem(NAME_KEY, name);
+    if (name !== previous) rerenderLoadedMessages();
   });
 
   let renderedIds = new Set();
   let es = null;
 
+  // Paginação "mais recentes primeiro": na abertura só as PAGE_SIZE mensagens
+  // mais novas descem do servidor; lotes anteriores são buscados conforme a
+  // pessoa rola pra cima (loadOlderMessages). loadedMessages é a lista
+  // autoritativa em ordem ascendente do que já foi carregado - ao paginar pra
+  // trás re-renderizamos tudo a partir dela (o agrupamento/data-divider é um
+  // passo forward-only, prepender no DOM quebraria o estado). Mensagens novas
+  // continuam só dando append normal, sem re-render.
+  const PAGE_SIZE = 50;
+  let loadedMessages = [];
+  let hasMoreOlder = false;
+  let loadingOlder = false;
+  // Fica false durante a janela barulhenta da carga inicial (render + scroll
+  // pra base + imagens assentando) pra não disparar paginação pra trás sem a
+  // pessoa ter rolado. Volta a true poucos frames depois.
+  let messagesReady = false;
+
   // Tracks the previously-rendered row/sender/time so consecutive messages
   // from the same author can be visually grouped (tighter spacing, avatar/
-  // name shown once, timestamp only on the last one of the run) instead of
+  // name shown once) instead of
   // each rendering as a fully separate message like before. lastTs also
   // gates grouping on a time gap (see renderMessage) and lastDateKey drives
   // the day-divider rows.
@@ -465,26 +852,11 @@
   let lastDateKey = null;
 
   // Consecutive messages from the same sender stop being visually grouped
-  // once more than this much time has passed between them, even though
-  // they're still "the same conversation turn" as far as sideForSender is
-  // concerned - matches how WhatsApp breaks a run after a gap instead of
-  // grouping messages sent hours apart under one shared timestamp.
+  // once more than this much time has passed between them, even though they're
+  // still the same sender on the same side - matches how WhatsApp breaks a run
+  // after a gap instead of grouping messages sent hours apart under one shared
+  // timestamp.
   const GROUP_GAP_MS = 5 * 60 * 1000;
-
-  // Which side of the screen each author's bubbles render on. Deterministic
-  // and shared by every viewer (unlike comparing against "my name" typed
-  // into this particular browser): the first sender to appear in the
-  // conversation's chronological order (same for everyone, since the server
-  // always returns messages in send order) renders on the left, any other
-  // sender renders on the right. That way two different authors always end
-  // up on opposite sides, for whoever is looking at the chat.
-  let authorSide = new Map();
-  function sideForSender(name) {
-    if (!authorSide.has(name)) {
-      authorSide.set(name, authorSide.size === 0 ? 'them' : 'me');
-    }
-    return authorSide.get(name);
-  }
 
   // Bubble timestamps are HH:mm only - the date lives in the divider rows
   // instead (see fmtDateDivider/dateKey below), matching how WhatsApp
@@ -688,25 +1060,111 @@
     const bubble = row && row.querySelector('.bubble');
     if (!bubble || bubble.querySelector('.link-preview-card')) return;
     const wasNearBottom = isNearBottom();
-    bubble.appendChild(buildLinkPreviewCard(linkPreview));
+    // Card entra ACIMA do texto, estilo WhatsApp (ver buildBubbleContent).
+    const textEl = bubble.querySelector('.bubble-text');
+    bubble.insertBefore(buildLinkPreviewCard(linkPreview), textEl);
     if (wasNearBottom) scrollToBottom();
+  }
+
+  // ---------------------------------------------------------------------
+  // Reações (❤️ 👍 😂 😮 😢 🔥)
+  //
+  // Uma reação por pessoa por mensagem, com toggle: reagir com o mesmo
+  // emoji remove, com outro troca. A escolha sai da barra no topo do
+  // #msg-menu ou de um toque no próprio chip embaixo do balão. A UI
+  // atualiza pelo SSE "message-reacted" (igual a apagar/enviar), não pela
+  // resposta do fetch. A identidade é myName(), o mesmo critério de lado
+  // da bolha e do requesterName usado em apagar/visualização única.
+  // ---------------------------------------------------------------------
+  async function sendReaction(id, emoji) {
+    if (!REACTION_EMOJIS.includes(emoji)) return;
+    if (!myName()) {
+      nameInput.focus();
+      return;
+    }
+    try {
+      const res = await fetch(api(`/api/messages/${id}/react`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requesterName: myName(), emoji }),
+      });
+      if (!res.ok) toast('Não foi possível reagir a essa mensagem.');
+    } catch (err) {
+      // hiccup de rede — a reação simplesmente não vai
+    }
+  }
+
+  // Agrega o array m.reactions ([{ sender, emoji, ts }]) por emoji,
+  // preservando a ordem da 1ª aparição, e devolve o <div.msg-reactions>
+  // com um chip por emoji. Tocar um chip alterna aquela reação (re-toque
+  // no meu próprio emoji remove, igual ao WhatsApp).
+  function buildReactions(m) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg-reactions';
+    const order = [];
+    const byEmoji = new Map();
+    for (const r of m.reactions || []) {
+      if (!byEmoji.has(r.emoji)) {
+        byEmoji.set(r.emoji, { count: 0, mine: false });
+        order.push(r.emoji);
+      }
+      const agg = byEmoji.get(r.emoji);
+      agg.count += 1;
+      if (r.sender === myName()) agg.mine = true;
+    }
+    for (const emoji of order) {
+      const agg = byEmoji.get(emoji);
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `reaction-chip${agg.mine ? ' mine' : ''}`;
+      chip.textContent = emoji;
+      if (agg.count > 1) {
+        const count = document.createElement('span');
+        count.className = 'reaction-count';
+        count.textContent = agg.count;
+        chip.appendChild(count);
+      }
+      chip.addEventListener('click', () => sendReaction(m.id, emoji));
+      wrap.appendChild(chip);
+    }
+    return wrap;
+  }
+
+  // Alguém reagiu (ou desfez) enquanto a bolha já estava na tela (SSE
+  // "message-reacted"): troca o <div.msg-reactions> em vez de re-renderizar
+  // a mensagem inteira. Mesma ideia de applyLinkPreview.
+  function applyReactions(id, reactions) {
+    const row = messagesEl.querySelector(`[data-id="${id}"]`);
+    if (!row) return;
+    const body = row.querySelector('.msg-body');
+    if (!body) return;
+    const existing = body.querySelector('.msg-reactions');
+    if (existing) existing.remove();
+    if (reactions && reactions.length) {
+      const wasNearBottom = isNearBottom();
+      const m = loadedMessages.find((x) => x.id === id) || { id, reactions };
+      body.appendChild(buildReactions({ ...m, reactions }));
+      if (wasNearBottom) scrollToBottom();
+    }
   }
 
   function buildBubbleContent(bubble, m) {
     if (m.type === 'text') {
+      // Card de preview ACIMA do texto (estilo WhatsApp). Já vem resolvido
+      // no histórico (ver /api/messages); um preview ainda em voo chega
+      // depois pelo SSE "message-updated" (applyLinkPreview).
+      if (m.linkPreview) {
+        bubble.appendChild(buildLinkPreviewCard(m.linkPreview));
+      }
       // append (not bubble.textContent=) so we don't wipe out a reply-quote
       // block that may already have been appended before this call.
       const textEl = document.createElement('span');
       textEl.className = 'bubble-text';
       linkify(textEl, m.text);
       bubble.appendChild(textEl);
+      // A hora é absoluta no canto do balão (ver .msg-time); a ordem no DOM
+      // não muda onde ela aparece, mas deixamos por último por clareza.
       bubble.appendChild(makeTimeEl(m.ts));
-      // Already resolved by the time this message loaded from history
-      // (see /api/messages); a preview still in flight arrives later via
-      // the "message-updated" SSE event (applyLinkPreview).
-      if (m.linkPreview) {
-        bubble.appendChild(buildLinkPreviewCard(m.linkPreview));
-      }
     } else if (m.type === 'image') {
       const wrap = document.createElement('span');
       wrap.className = 'bubble-media-wrap';
@@ -717,7 +1175,7 @@
       // Reserves the right box on first paint (browsers derive an intrinsic
       // aspect-ratio from width/height attrs even under responsive CSS) so
       // the bubble doesn't grow/shift once the real file finishes loading -
-      // see readMediaDimensions, captured client-side before upload.
+      // see readMediaMeta, captured client-side before upload.
       if (m.width && m.height) {
         img.width = m.width;
         img.height = m.height;
@@ -733,6 +1191,15 @@
       vid.src = api(`/api/media/${m.mediaId}`);
       vid.controls = true;
       vid.preload = 'metadata';
+      // Sem poster, o balão fica em branco até o navegador conseguir os
+      // metadados do vídeo - e como /api/media não tem suporte a Range,
+      // "metadados" pode significar baixar o arquivo inteiro (1-12MB) antes
+      // de mostrar qualquer coisa. m.thumbId já existe (mesma miniatura da
+      // aba Mídia, ~20-60KB) e resolve isso na hora. Vídeo antigo sem
+      // thumbId cai de volta no comportamento de sempre.
+      if (m.thumbId) {
+        vid.poster = api(`/api/media/${m.thumbId}`);
+      }
       if (m.width && m.height) {
         vid.width = m.width;
         vid.height = m.height;
@@ -868,7 +1335,14 @@
     }
 
     const color = nameColor(m.sender);
-    const mine = sideForSender(m.sender) === 'me';
+    // Lado da bolha = quem está olhando a tela, como em qualquer mensageiro:
+    // o que EU mandei vai pra direita, o resto pra esquerda. A identidade é o
+    // nome de exibição comparado exatamente (trim), o mesmo critério que o
+    // servidor usa pra "visualização única" (server.js) e que a presença usa
+    // em otherPeopleOnline - uma noção só de identidade no app inteiro.
+    // Por isso myName() não pode estar vazio: showChat() exige o nome antes de
+    // renderizar qualquer mensagem, e renomear re-renderiza a lista.
+    const mine = m.sender === myName();
     // Same author as the message right before this one, sent within the
     // grouping window → render as part of the same visual group instead of
     // a brand-new block.
@@ -877,6 +1351,10 @@
     const row = document.createElement('div');
     row.className = `msg-row ${mine ? 'me' : 'them'}${grouped ? ' grouped' : ''}${animate ? ' msg-enter' : ''}`;
     row.dataset.id = m.id;
+
+    // Esta mensagem se agrupa com a anterior → a bolha de cima deixa de ser a
+    // última do grupo e perde o canto "apontado" (ver .has-follower no CSS).
+    if (grouped && lastRow) lastRow.classList.add('has-follower');
 
     const line = document.createElement('div');
     line.className = 'msg-line';
@@ -919,14 +1397,14 @@
       bubble.appendChild(label);
       bubble.appendChild(makeTimeEl(m.ts));
     } else if (m.ephemeral) {
-      // Deliberately NOT the `mine` (visual left/right side) flag here -
-      // sideForSender is a fixed, conversation-wide left/right convention
-      // shared identically by both devices (see its own comment above), not
-      // "did THIS device send it". Whether view-once media is even
-      // tappable has to key off actual identity - m.sender === myName() -
-      // or someone could see their own sent photo rendered as an openable
-      // "toque para ver" and get an unexplained 403 back from the server
-      // when they tap it, which already refuses that (see server.js).
+      // Escrito por extenso, e não reaproveitando o `mine` acima, de
+      // propósito: hoje as duas expressões são a mesma coisa, mas `mine` é o
+      // lado VISUAL da bolha e isto aqui é uma permissão. Se o critério de
+      // lado mudar de novo, quem pode abrir mídia de visualização única tem
+      // que continuar preso à identidade real - m.sender === myName() - ou
+      // alguém veria a própria foto enviada como um "toque para ver" clicável
+      // e levaria um 403 sem explicação do servidor, que já recusa isso
+      // (ver server.js).
       buildEphemeralLockedContent(bubble, m, m.sender === myName());
     } else {
       if (m.replyTo) {
@@ -942,54 +1420,34 @@
         qSnippet.textContent = m.replyTo.snippet;
         quote.appendChild(qSender);
         quote.appendChild(qSnippet);
-        quote.addEventListener('click', () => scrollToMessage(m.replyTo.id));
+        // jumpToMessage e não scrollToMessage: antes, clicar numa citação de
+        // mensagem fora do lote carregado só dava o toast de "nao esta mais
+        // visivel". Com o ?from= no lugar, o salto funciona de verdade.
+        quote.addEventListener('click', () => jumpToMessage(m.replyTo.id));
         bubble.appendChild(quote);
       }
       buildBubbleContent(bubble, m);
     }
     body.appendChild(bubble);
 
-    if (!m.deleted) {
-      const actions = document.createElement('div');
-      actions.className = 'msg-actions';
-
-      const replyBtn = document.createElement('button');
-      replyBtn.type = 'button';
-      replyBtn.className = 'msg-action-btn';
-      replyBtn.title = 'Responder';
-      replyBtn.setAttribute('aria-label', 'Responder');
-      replyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6 4 11l5 5"/><path d="M4 11h9a6 6 0 0 1 6 6v1.5"/></svg>';
-      replyBtn.addEventListener('click', () => setReplyingTo(m));
-      actions.appendChild(replyBtn);
-
-      // Either person can delete either message (2-person private chat,
-      // server enforces the same rule - see server.js) - not gated on
-      // identity at all anymore. The deleted placeholder shows who actually
-      // did it (applyDeletedPlaceholder), so this stays transparent even
-      // though it's no longer restricted to "only the original sender".
-      const delBtn = document.createElement('button');
-      delBtn.type = 'button';
-      delBtn.className = 'msg-action-btn is-danger';
-      delBtn.title = 'Apagar';
-      delBtn.setAttribute('aria-label', 'Apagar mensagem');
-      delBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14"/><path d="M7 7l.8 12.1a2 2 0 0 0 2 1.9h4.4a2 2 0 0 0 2-1.9L17 7"/><path d="M9.5 7V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v2"/></svg>';
-      delBtn.addEventListener('click', () => handleDeleteClick(m.id));
-      actions.appendChild(delBtn);
-
-      body.appendChild(actions);
+    // Chips de reação colados embaixo do balão (fora do .bubble, no
+    // .msg-body - não mexem no .msg-time). rerenderLoadedMessages redesenha
+    // por aqui, então nada se perde ao paginar pra trás / trocar de nome.
+    if (!m.deleted && m.reactions && m.reactions.length) {
+      body.appendChild(buildReactions(m));
     }
+
+    // As ações da mensagem (Responder / Copiar / Apagar) não vivem mais como
+    // botões fixos embaixo do balão - agora saem no #msg-menu, aberto por
+    // clique direito (desktop) ou toque longo (touch). Ver a seção "menu de
+    // contexto da mensagem" mais acima.
 
     line.appendChild(body);
     row.appendChild(line);
 
-    if (grouped && lastRow) {
-      // Only the last message of a group keeps its visible timestamp - but
-      // never hide a photo/video's overlay pill, which WhatsApp always
-      // shows regardless of grouping since it doesn't cost any extra
-      // vertical space the way the floated text-bubble time does.
-      const prevTime = lastRow.querySelector('.msg-time:not(.msg-time-overlay)');
-      if (prevTime) prevTime.classList.add('hidden');
-    }
+    // Cada mensagem carrega o seu próprio horário (HH:mm), mesmo dentro de um
+    // grupo de mensagens seguidas do mesmo remetente - antes só a última do
+    // grupo mantinha o timestamp visível.
 
     messagesEl.appendChild(row);
     lastRow = row;
@@ -1001,6 +1459,10 @@
   function applyDeletedPlaceholder(id, expiredEphemeral, deletedBy) {
     const row = messagesEl.querySelector(`[data-id="${id}"]`);
     if (!row) return;
+    // Se o menu de contexto estava aberto pra esta mensagem quando a exclusão
+    // chegou pelo SSE, fecha - não faz sentido "Responder/Copiar/Apagar" um
+    // balão que virou "mensagem apagada".
+    if (activeMenuMsgId === id) closeMessageMenu();
     const bubble = row.querySelector('.bubble');
     if (bubble) {
       // Grab whatever time text is already showing (works whether this
@@ -1024,8 +1486,6 @@
         bubble.appendChild(timeEl);
       }
     }
-    const actions = row.querySelector('.msg-actions');
-    if (actions) actions.remove();
   }
 
   function openLightbox(kind, src) {
@@ -1042,6 +1502,332 @@
     if (e.target === lightbox) lightbox.classList.add('hidden');
   });
 
+  // ---- aba de mídia ----
+  //
+  // Grade de todas as fotos e vídeos da conversa. A regra que define o
+  // desenho todo: a grade baixa SÓ miniaturas (~30KB), e só das que estão
+  // perto da tela; o arquivo original (1-12MB) só é buscado no clique, no
+  // lightbox. Sem isso, abrir a aba com 40 fotos baixaria centenas de MB.
+  //
+  // O painel é estado em memória, nunca URL - o api() no topo do arquivo
+  // deriva o caminho da sala de location.pathname, então mexer na URL
+  // quebraria todos os requests da página.
+
+  const MEDIA_PAGE_SIZE = 120;
+
+  let mediaItems = [];          // tudo que já foi carregado, mais novo → mais antigo
+  let mediaCursor = null;       // id da última mensagem do lote (paginação)
+  let mediaHasMore = true;
+  let mediaLoadingPage = false;
+  let mediaLoadedOnce = false;
+  let mediaLastMonthKey = null; // pra não repetir o cabeçalho do mês
+  let thumbObserver = null;
+  let mediaPageObserver = null;
+
+  function isMediaPanelOpen() {
+    return !mediaPanel.classList.contains('hidden');
+  }
+
+  // Carrega a miniatura só quando o tile chega perto da tela. rootMargin
+  // generoso (600px) pra imagem já estar pronta quando a pessoa rola até
+  // ela, em vez de aparecer um quadrado cinza que preenche depois.
+  function ensureThumbObserver() {
+    if (thumbObserver) return thumbObserver;
+    thumbObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const img = entry.target;
+        thumbObserver.unobserve(img); // uma vez só: já tem src, acabou
+        if (img.dataset.src) {
+          img.src = img.dataset.src;
+          delete img.dataset.src;
+        }
+      }
+    }, { root: mediaScroll, rootMargin: '600px 0px' });
+    return thumbObserver;
+  }
+
+  function ensureMediaPageObserver() {
+    if (mediaPageObserver) return mediaPageObserver;
+    mediaPageObserver = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) loadMediaPage();
+    }, { root: mediaScroll, rootMargin: '400px 0px' });
+    mediaPageObserver.observe(mediaSentinel);
+    return mediaPageObserver;
+  }
+
+  function monthKeyOf(ts) {
+    const d = new Date(ts);
+    return `${d.getFullYear()}-${d.getMonth()}`;
+  }
+
+  function monthLabelOf(ts) {
+    return new Date(ts).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  }
+
+  const VIDEO_BADGE_SVG =
+    '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5L8 5.5Z"/></svg>';
+
+  // Mostrado no lugar da miniatura pro vídeo antigo, que não tem uma e
+  // não pode ganhar sem baixar o arquivo inteiro.
+  const VIDEO_PLACEHOLDER_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="M16 10.5 21 7.5v9L16 13.5"/></svg>';
+
+  function buildMediaTile(item) {
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = 'media-tile';
+    tile.dataset.id = item.id;
+    // O tile é sempre quadrado (aspect-ratio no CSS) e a imagem é cortada
+    // com object-fit: cover. Respeitar a proporção de cada mídia deixaria
+    // as linhas irregulares - uma foto 4:3 do lado de um vídeo 16:9 - e é
+    // por isso que toda galeria de verdade usa quadrado. Como o tamanho
+    // não depende do arquivo, a grade também já nasce no lugar certo e
+    // nunca reflui conforme as miniaturas chegam.
+
+    // O que o tile carrega, em ordem de preferência:
+    //   1. tem thumbId          -> a miniatura (~30KB). O caso normal.
+    //   2. foto sem thumbId     -> o original. Pesado, mas renderiza, e é
+    //      justamente o que alimenta o retrofit logo abaixo.
+    //   3. vídeo sem thumbId    -> NADA. Um <img> apontando pra um .mp4
+    //      baixa o arquivo inteiro (5MB medidos) e depois falha ao
+    //      decodificar, mostrando um quadrado vazio - o desperdício exato
+    //      que essa aba existe pra evitar. Fica só o placeholder com o
+    //      ícone de vídeo; quem quiser ver, clica e abre no lightbox.
+    const canPreview = item.thumbId || item.type === 'image';
+
+    if (canPreview) {
+      const img = document.createElement('img');
+      img.decoding = 'async';
+      img.alt = item.filename || (item.type === 'video' ? 'Vídeo' : 'Foto');
+      // SEM src aqui: quem define é o IntersectionObserver, quando o tile
+      // chega perto da tela.
+      img.dataset.src = api(`/api/media/${item.thumbId || item.mediaId}`);
+      img.addEventListener('load', () => {
+        img.classList.add('is-loaded');
+        if (!item.thumbId) queueThumbBackfill(item, img);
+      });
+      tile.appendChild(img);
+      ensureThumbObserver().observe(img);
+    } else {
+      const ph = document.createElement('span');
+      ph.className = 'media-tile-placeholder';
+      ph.innerHTML = VIDEO_PLACEHOLDER_SVG;
+      tile.appendChild(ph);
+    }
+
+    if (item.type === 'video') {
+      const badge = document.createElement('span');
+      badge.className = 'media-tile-badge';
+      badge.innerHTML = VIDEO_BADGE_SVG;
+      tile.appendChild(badge);
+    }
+
+    // O ÚNICO ponto em que o arquivo cheio é baixado.
+    tile.addEventListener('click', () => {
+      openLightbox(item.type === 'video' ? 'video' : 'image', api(`/api/media/${item.mediaId}`));
+    });
+
+    return tile;
+  }
+
+  // Retrofit da mídia antiga: o tile carregou o original, então a imagem
+  // já está decodificada aqui no cliente - desenha no canvas e manda a
+  // miniatura pro servidor guardar. Uma por vez, pra não competir com o
+  // resto da grade por conexão, e silencioso: se falhar, o tile só
+  // continua no caminho pesado na próxima abertura.
+  const thumbBackfillQueue = [];
+  let thumbBackfillRunning = false;
+
+  function queueThumbBackfill(item, img) {
+    if (item.thumbId || item.type !== 'image') return; // vídeo: ver nota abaixo
+    thumbBackfillQueue.push({ item, img });
+    runThumbBackfill();
+  }
+
+  async function runThumbBackfill() {
+    if (thumbBackfillRunning) return;
+    thumbBackfillRunning = true;
+    try {
+      while (thumbBackfillQueue.length) {
+        const { item, img } = thumbBackfillQueue.shift();
+        try {
+          const w = img.naturalWidth;
+          const h = img.naturalHeight;
+          if (!w || !h) continue;
+          const blob = await drawThumb(img, w, h);
+          if (!blob) continue;
+          const form = new FormData();
+          form.append('thumb', blob, 'thumb.jpg');
+          const res = await fetch(api(`/api/media/${item.mediaId}/thumb`), {
+            method: 'POST',
+            body: form,
+          });
+          if (!res.ok) continue;
+          const out = await res.json();
+          if (out && out.thumbId) item.thumbId = out.thumbId;
+        } catch (e) {
+          // silencioso de propósito - é otimização, não funcionalidade
+        }
+      }
+    } finally {
+      thumbBackfillRunning = false;
+    }
+  }
+  // Nota: vídeo antigo não entra no retrofit. Pegar um frame exigiria
+  // baixar o arquivo inteiro num <video> escondido só pra isso, e sem
+  // suporte a Range no servidor seriam megabytes por tile - o oposto do
+  // objetivo. Vídeo enviado a partir de agora já sobe com miniatura.
+
+  function appendMediaItems(items) {
+    const frag = document.createDocumentFragment();
+    for (const item of items) {
+      const key = monthKeyOf(item.ts);
+      if (key !== mediaLastMonthKey) {
+        mediaLastMonthKey = key;
+        const head = document.createElement('div');
+        head.className = 'media-month';
+        head.dataset.key = key;
+        head.textContent = monthLabelOf(item.ts);
+        frag.appendChild(head);
+      }
+      frag.appendChild(buildMediaTile(item));
+    }
+    mediaGrid.appendChild(frag);
+  }
+
+  function updateMediaCount() {
+    mediaCount.textContent = mediaItems.length
+      ? `${mediaItems.length}${mediaHasMore ? '+' : ''}`
+      : '';
+    mediaEmpty.classList.toggle('hidden', mediaItems.length > 0 || mediaLoadingPage || !mediaLoadedOnce);
+  }
+
+  async function loadMediaPage() {
+    if (mediaLoadingPage || !mediaHasMore) return;
+    mediaLoadingPage = true;
+    mediaLoading.classList.remove('hidden');
+    try {
+      const qs = `limit=${MEDIA_PAGE_SIZE}${mediaCursor ? `&before=${encodeURIComponent(mediaCursor)}` : ''}`;
+      const res = await fetch(api(`/api/media-list?${qs}`));
+      if (!res.ok) throw new Error('media list failed');
+      const data = await res.json();
+      const items = data.items || [];
+      mediaHasMore = !!data.hasMore;
+      if (items.length) {
+        mediaCursor = items[items.length - 1].id;
+        mediaItems = mediaItems.concat(items);
+        appendMediaItems(items);
+      }
+      mediaLoadedOnce = true;
+    } catch (e) {
+      mediaHasMore = false;
+      mediaLoadedOnce = true;
+    } finally {
+      mediaLoadingPage = false;
+      mediaLoading.classList.add('hidden');
+      updateMediaCount();
+    }
+    // A primeira página pode não encher a tela (ou pode ter vindo vazia
+    // porque o lote só tinha texto): se o sentinela ainda está visível,
+    // o observer não dispara de novo sozinho, então puxa a próxima aqui.
+    if (mediaHasMore && !mediaLoadingPage && isMediaPanelOpen()
+        && mediaScroll.scrollHeight <= mediaScroll.clientHeight) {
+      loadMediaPage();
+    }
+  }
+
+  function resetMediaPanel() {
+    if (activeMenuMode === 'media') closeMessageMenu();
+    mediaGrid.innerHTML = '';
+    mediaItems = [];
+    mediaCursor = null;
+    mediaHasMore = true;
+    mediaLoadedOnce = false;
+    mediaLastMonthKey = null;
+    thumbBackfillQueue.length = 0;
+    updateMediaCount();
+    // Se a aba estava aberta na hora (conversa limpa pela outra pessoa),
+    // recarrega na hora - senão ficaria uma grade vazia sem nem o aviso de
+    // "nenhuma foto ainda", esperando um fechar/abrir pra se resolver.
+    if (isMediaPanelOpen()) loadMediaPage();
+  }
+
+  function openMediaPanel() {
+    mediaPanel.classList.remove('hidden');
+    ensureMediaPageObserver();
+    // A grade fica montada entre aberturas de propósito: /api/media
+    // responde com no-store, então destruir e recriar os <img> significaria
+    // rebaixar todas as miniaturas toda vez que a aba fosse reaberta.
+    if (!mediaLoadedOnce) loadMediaPage();
+  }
+
+  function closeMediaPanel() {
+    mediaPanel.classList.add('hidden');
+  }
+
+  mediaBtn.addEventListener('click', openMediaPanel);
+  mediaBack.addEventListener('click', closeMediaPanel);
+
+  // Escape fecha o de cima primeiro: menu de contexto, lightbox, painel. O
+  // menu já se fecha sozinho pelo onMenuKey dele; o early-return aqui é pra
+  // esse Escape não fechar o painel JUNTO, no mesmo toque.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (activeMenuMsgId !== null) return;
+    if (!lightbox.classList.contains('hidden')) {
+      lightbox.classList.add('hidden');
+    } else if (isMediaPanelOpen()) {
+      closeMediaPanel();
+    }
+  });
+
+  // Mídia nova chegando pelo SSE entra no topo da grade (que é a posição
+  // mais recente), sem refazer a página inteira.
+  function addMediaItemToTop(m) {
+    if (!mediaLoadedOnce) return; // ainda não carregou nada; vai vir na 1ª página
+    if (m.type !== 'image' && m.type !== 'video') return;
+    if (m.ephemeral || m.deleted || !m.mediaId) return;
+    if (mediaItems.some((it) => it.id === m.id)) return;
+
+    const item = {
+      id: m.id, type: m.type, mediaId: m.mediaId, thumbId: m.thumbId,
+      width: m.width, height: m.height, sender: m.sender, ts: m.ts,
+      filename: m.filename,
+    };
+    mediaItems.unshift(item);
+
+    const tile = buildMediaTile(item);
+    const key = monthKeyOf(item.ts);
+    const firstHead = mediaGrid.querySelector('.media-month');
+    // Mês diferente do primeiro cabeçalho (ou grade vazia) → cabeçalho novo
+    // na frente. Mesmo mês → o tile só entra depois do cabeçalho que já existe.
+    if (!firstHead || firstHead.dataset.key !== key) {
+      const head = document.createElement('div');
+      head.className = 'media-month';
+      head.dataset.key = key;
+      head.textContent = monthLabelOf(item.ts);
+      mediaGrid.prepend(tile);
+      mediaGrid.prepend(head);
+      if (!firstHead) mediaLastMonthKey = key;
+    } else {
+      firstHead.after(tile);
+    }
+    updateMediaCount();
+  }
+
+  function removeMediaItem(id) {
+    const i = mediaItems.findIndex((it) => it.id === id);
+    if (i === -1) return;
+    // Menu aberto em cima do tile que a outra pessoa acabou de apagar: fecha
+    // antes de tirar o tile do DOM (mesma guarda de applyDeletedPlaceholder).
+    if (activeMenuMsgId === id) closeMessageMenu();
+    mediaItems.splice(i, 1);
+    const tile = mediaGrid.querySelector(`.media-tile[data-id="${id}"]`);
+    if (tile) tile.remove();
+    updateMediaCount();
+  }
+
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
@@ -1051,13 +1837,39 @@
   // render. Nudge the scroll position down again as things settle so we
   // reliably land on the very last message instead of stopping wherever the
   // layout happened to be at that instant.
-  function scrollToBottomWhenReady() {
+  // opts.pin: cola a base de forma mais teimosa por ~0,8s (ou até a pessoa
+  // tocar/rolar), ignorando o isNearBottom(). Usado só na carga inicial - aí
+  // a pessoa quer a última mensagem, e mídia antiga sem width/height salvos
+  // reflui depois do render e empurra a base pra longe justo quando o
+  // isNearBottom() passa a dar false, deixando a abertura "quase no fim".
+  function scrollToBottomWhenReady(opts) {
+    const pin = !!(opts && opts.pin);
     scrollToBottom();
     requestAnimationFrame(() => {
       scrollToBottom();
       requestAnimationFrame(scrollToBottom);
     });
-    // Media that already has width/height reserved (see readMediaDimensions/
+    if (pin) {
+      let cancelled = false;
+      const cancel = () => {
+        cancelled = true;
+        messagesEl.removeEventListener('wheel', cancel);
+        messagesEl.removeEventListener('touchstart', cancel);
+        messagesEl.removeEventListener('keydown', cancel);
+      };
+      messagesEl.addEventListener('wheel', cancel, { once: true, passive: true });
+      messagesEl.addEventListener('touchstart', cancel, { once: true, passive: true });
+      messagesEl.addEventListener('keydown', cancel, { once: true });
+      const start = Date.now();
+      const tick = () => {
+        if (cancelled) return;
+        scrollToBottom();
+        if (Date.now() - start < 800) setTimeout(tick, 55);
+        else cancel();
+      };
+      setTimeout(tick, 55);
+    }
+    // Media that already has width/height reserved (see readMediaMeta/
     // renderMessage) doesn't reflow when it finishes loading, so most of
     // these listeners now simply never fire in practice. They're still
     // useful as a fallback for older messages sent before this feature
@@ -1103,6 +1915,15 @@
     scrollBottomBtn.classList.toggle('hidden', isNearBottom());
   }
   messagesEl.addEventListener('scroll', updateScrollBtn);
+  // Rolou pra cima, perto do topo, e ainda há histórico → puxa o lote anterior.
+  // Só depois que a carga inicial assentou (messagesReady) e desde que a pessoa
+  // NÃO esteja colada na base - a abertura sempre termina colada na base, e a
+  // reflow do spinner/imagens durante o primeiro paint não deve disparar isso.
+  messagesEl.addEventListener('scroll', () => {
+    if (!messagesReady || loadingOlder || !hasMoreOlder) return;
+    if (isNearBottom()) return;
+    if (messagesEl.scrollTop < 300) loadOlderMessages();
+  });
   scrollBottomBtn.addEventListener('click', () => {
     messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
   });
@@ -1143,20 +1964,100 @@
   window.addEventListener('orientationchange', () => setTimeout(syncViewportHeight, 60));
 
   async function loadMessages() {
+    messagesReady = false;
     loadingState.classList.remove('hidden');
     emptyState.classList.add('hidden');
     try {
-      const res = await fetch(api('/api/messages'));
+      const res = await fetch(api(`/api/messages?limit=${PAGE_SIZE}`));
       if (!res.ok) return;
-      const { messages } = await res.json();
+      const { messages, hasMore } = await res.json();
       resetMessagesView();
+      loadedMessages = messages.slice();
+      hasMoreOlder = !!hasMore;
       messages.forEach(renderMessage);
-      scrollToBottomWhenReady();
+      scrollToBottomWhenReady({ pin: true });
       updateScrollBtn();
+      // Libera a paginação por scroll só depois que o layout inicial assentou.
+      requestAnimationFrame(() => requestAnimationFrame(() => { messagesReady = true; }));
     } finally {
       loadingState.classList.add('hidden');
       updateEmptyState();
     }
+  }
+
+  // Primeira .msg-row pelo menos parcialmente visível - a âncora usada pra
+  // manter a posição de leitura estável quando a lista é re-renderizada.
+  function firstVisibleRow() {
+    const top = messagesEl.getBoundingClientRect().top;
+    const rows = messagesEl.querySelectorAll('.msg-row');
+    for (const r of rows) {
+      if (r.getBoundingClientRect().bottom > top + 1) return r;
+    }
+    return rows[rows.length - 1] || null;
+  }
+
+  // Redesenha a lista inteira a partir de loadedMessages (ver comentário na
+  // declaração de loadedMessages) preservando a posição de leitura: ancora na
+  // primeira mensagem visível, mede onde ela está na viewport antes, e depois
+  // do re-render corrige o scroll pra ela voltar exatamente pro mesmo lugar -
+  // robusto mesmo se o conteúdo sofrer reflow. Usado ao paginar pra trás e ao
+  // trocar de nome (que muda de que lado cada bolha fica).
+  function rerenderLoadedMessages() {
+    const anchor = firstVisibleRow();
+    const anchorId = anchor && anchor.dataset.id;
+    const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
+
+    clearRenderedRows();
+    loadedMessages.forEach(renderMessage);
+
+    const newAnchor = anchorId
+      ? messagesEl.querySelector(`.msg-row[data-id="${anchorId}"]`)
+      : null;
+    if (newAnchor) {
+      // Assinala o scroll em absoluto (zera → mede a âncora nessa base → posiciona)
+      // em vez de "+=", pra não depender de onde o navegador deixou o scrollTop
+      // depois do teardown/re-render nem do scroll-anchoring dele.
+      messagesEl.scrollTop = 0;
+      messagesEl.scrollTop = newAnchor.getBoundingClientRect().top - anchorTop;
+    }
+    updateScrollBtn();
+    updateEmptyState();
+  }
+
+  // Busca o lote imediatamente anterior ao que já está carregado e redesenha a
+  // lista com ele na frente.
+  async function loadOlderMessages() {
+    if (loadingOlder || !hasMoreOlder || !loadedMessages.length) return;
+    loadingOlder = true;
+    loadingOlderEl.classList.remove('hidden');
+    let older, hasMore;
+    try {
+      const before = loadedMessages[0].id;
+      const res = await fetch(api(`/api/messages?limit=${PAGE_SIZE}&before=${encodeURIComponent(before)}`));
+      if (!res.ok) return;
+      ({ messages: older, hasMore } = await res.json());
+    } finally {
+      loadingOlderEl.classList.add('hidden');
+      loadingOlder = false;
+    }
+    if (!older || !older.length) {
+      hasMoreOlder = false;
+      return;
+    }
+    // A âncora é medida dentro de rerenderLoadedMessages, antes de ele mexer
+    // no DOM - o array já ter crescido aqui em cima não interfere.
+    loadedMessages = older.concat(loadedMessages);
+    hasMoreOlder = !!hasMore;
+    rerenderLoadedMessages();
+  }
+
+  // Aplica uma alteração ao item correspondente em loadedMessages (a lista
+  // autoritativa), pra que um re-render disparado por loadOlderMessages não
+  // reverta patches que só tinham sido aplicados no DOM (apagada, preview de
+  // link, visualização única aberta).
+  function patchLoadedMessage(id, patch) {
+    const m = loadedMessages.find((x) => x.id === id);
+    if (m) Object.assign(m, patch);
   }
 
   function connectStream() {
@@ -1181,7 +2082,13 @@
     });
     es.addEventListener('message-updated', (evt) => {
       const { id, linkPreview } = JSON.parse(evt.data);
+      patchLoadedMessage(id, { linkPreview });
       applyLinkPreview(id, linkPreview);
+    });
+    es.addEventListener('message-reacted', (evt) => {
+      const { id, reactions } = JSON.parse(evt.data);
+      patchLoadedMessage(id, { reactions });
+      applyReactions(id, reactions);
     });
     es.addEventListener('message', (evt) => {
       // Only auto-follow to the new message if the person was already at
@@ -1190,7 +2097,9 @@
       // get the floating button to jump down whenever they want.
       const wasNearBottom = isNearBottom();
       const m = JSON.parse(evt.data);
+      loadedMessages.push(m);
       renderMessage(m, { animate: true });
+      addMediaItemToTop(m);
       if (wasNearBottom) {
         scrollToBottomWhenReady();
       } else {
@@ -1199,16 +2108,20 @@
     });
     es.addEventListener('cleared', () => {
       resetMessagesView();
+      resetMediaPanel();
     });
     es.addEventListener('message-deleted', (evt) => {
       const { id, expiredEphemeral, deletedBy } = JSON.parse(evt.data);
+      patchLoadedMessage(id, { deleted: true, deletedBy, expiredEphemeral: !!expiredEphemeral });
       applyDeletedPlaceholder(id, expiredEphemeral, deletedBy);
+      removeMediaItem(id);
     });
     // The other person opened a view-once photo/video I sent - just a
     // label update (locked → "Aberto"); the media itself never reaches
     // this client, only whoever actually called .../view gets it.
     es.addEventListener('message-viewed', (evt) => {
-      const { id } = JSON.parse(evt.data);
+      const { id, viewedAt } = JSON.parse(evt.data);
+      patchLoadedMessage(id, { viewedAt: viewedAt || Date.now() });
       const row = messagesEl.querySelector(`[data-id="${id}"]`);
       const label = row && row.querySelector('.ephemeral-locked .ephemeral-label');
       if (label) label.textContent = 'Aberto';
@@ -1229,6 +2142,12 @@
     loginScreen.classList.remove('hidden');
     chatScreen.classList.add('hidden');
     decoyScreen.classList.add('hidden');
+    nameScreen.classList.add('hidden');
+    // O painel de mídia é fixed e vive fora das .screen, então sair não o
+    // esconde sozinho. Zerar também descarta os metadados que ficaram em
+    // memória da sessão anterior.
+    closeMediaPanel();
+    resetMediaPanel();
     codeInput.focus();
   }
 
@@ -1239,10 +2158,47 @@
     loginScreen.classList.add('hidden');
     chatScreen.classList.add('hidden');
     decoyScreen.classList.remove('hidden');
+    nameScreen.classList.add('hidden');
+    closeMediaPanel();
   }
 
+  // Sem nome não dá pra saber o que é "meu", e é isso que decide o lado das
+  // bolhas - então o nome vem antes de qualquer mensagem ser renderizada.
+  // Único ponto de entrada do chat (checkAuth e o login passam por aqui).
   async function showChat() {
+    if (!myName()) {
+      showNamePrompt();
+      return;
+    }
+    await enterChat();
+  }
+
+  function showNamePrompt() {
     loginScreen.classList.add('hidden');
+    chatScreen.classList.add('hidden');
+    decoyScreen.classList.add('hidden');
+    nameScreen.classList.remove('hidden');
+    nameScreenInput.value = localStorage.getItem(NAME_KEY) || '';
+    nameScreenInput.focus();
+  }
+
+  nameForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = nameScreenInput.value.trim();
+    if (!name) {
+      nameScreenInput.focus();
+      return;
+    }
+    localStorage.setItem(NAME_KEY, name);
+    // O campo do compositor continua sendo a fonte que myName() lê.
+    nameInput.value = name;
+    nameScreen.classList.add('hidden');
+    await enterChat();
+  });
+
+  async function enterChat() {
+    loginScreen.classList.add('hidden');
+    nameScreen.classList.add('hidden');
     chatScreen.classList.remove('hidden');
     await loadMessages();
     connectStream();
@@ -1347,7 +2303,12 @@
   // Best-effort: any failure (unsupported format, slow decode) just
   // resolves with null and that one bubble falls back to the old
   // grows-once-loaded behavior instead of blocking the upload.
-  function readMediaDimensions(file) {
+  //
+  // O mesmo probe que já era criado só pra medir agora também é desenhado
+  // num <canvas> pra gerar a miniatura que a aba "Mídia" usa na grade -
+  // ver drawThumb abaixo. Resultado: { width, height, thumb } com thumb
+  // podendo ser null (e aí o servidor simplesmente não guarda thumbId).
+  function readMediaMeta(file) {
     return new Promise((resolve) => {
       const isImage = file.type.startsWith('image/');
       const isVideo = file.type.startsWith('video/');
@@ -1357,33 +2318,103 @@
       }
       const url = URL.createObjectURL(file);
       let done = false;
-      const finish = (dims) => {
+      const finish = (meta) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
         URL.revokeObjectURL(url);
-        resolve(dims);
+        resolve(meta);
       };
       const timer = setTimeout(() => finish(null), 8000);
+
+      // Mede primeiro (é o que não pode falhar), depois tenta a miniatura.
+      // Se o toBlob der errado, ainda entregamos width/height.
+      const settle = (probe, width, height) => {
+        if (!width || !height) return finish(null);
+        drawThumb(probe, width, height).then((thumb) => {
+          finish({ width, height, thumb });
+        });
+      };
+
       if (isImage) {
         const probe = new Image();
-        probe.onload = () => finish(
-          probe.naturalWidth && probe.naturalHeight
-            ? { width: probe.naturalWidth, height: probe.naturalHeight }
-            : null
-        );
+        probe.onload = () => settle(probe, probe.naturalWidth, probe.naturalHeight);
         probe.onerror = () => finish(null);
         probe.src = url;
       } else {
         const probe = document.createElement('video');
         probe.preload = 'metadata';
-        probe.onloadedmetadata = () => finish(
-          probe.videoWidth && probe.videoHeight
-            ? { width: probe.videoWidth, height: probe.videoHeight }
-            : null
-        );
+        // muted + playsInline: sem os dois o Safari do iOS se recusa a
+        // decodificar o frame fora de um gesto do usuário, e o canvas sai
+        // preto (ou o seek nunca completa).
+        probe.muted = true;
+        probe.playsInline = true;
+        probe.onloadedmetadata = async () => {
+          const w = probe.videoWidth;
+          const h = probe.videoHeight;
+          if (!w || !h) return finish(null);
+          // O Safari (desktop e iOS - mesmo motor WebKit) não decodifica
+          // frame nenhum antes de dar play() pelo menos uma vez: mesmo
+          // depois do seeked, o <video> não tem nada de verdade pro
+          // drawImage capturar, e o canvas sai sólido preto. Confirmado
+          // reproduzindo com o motor WebKit - Chromium não tem esse
+          // problema. muted + playsInline (já setados acima) são o que
+          // permite esse play() rodar sem gesto do usuário; play/pause é
+          // silencioso e nunca chega a ser visível.
+          try {
+            await probe.play();
+            probe.pause();
+          } catch (e) {
+            // play recusado - segue tentando via seek mesmo assim, o
+            // timeout abaixo garante que não trava esperando pra sempre
+          }
+          // Frame do comecinho, mas não o 0 - muito vídeo abre com um
+          // frame preto de fade-in, o que daria uma grade de quadrados
+          // pretos. Meio segundo já pegou alguma coisa na maioria deles.
+          const target = Math.min(0.5, (probe.duration || 1) / 2);
+          let settled = false;
+          const grab = () => {
+            if (settled) return;
+            settled = true;
+            settle(probe, w, h);
+          };
+          probe.onseeked = grab;
+          try {
+            probe.currentTime = target;
+          } catch (e) {
+            grab(); // seek recusado: desenha o que estiver decodificado
+          }
+          // Se o seeked não vier (acontece em alguns codecs no iOS), não
+          // fica pendurado até o timeout de 8s levar a dimensão junto.
+          setTimeout(grab, 1200);
+        };
         probe.onerror = () => finish(null);
         probe.src = url;
+      }
+    });
+  }
+
+  // Miniatura pra grade da aba "Mídia". Maior lado em THUMB_MAX_PX, JPEG -
+  // 20-60KB no lugar dos 1-12MB do arquivo original, que é a diferença
+  // entre a grade abrir na hora e a grade derrubar a conexão.
+  const THUMB_MAX_PX = 400;
+
+  function drawThumb(source, width, height) {
+    return new Promise((resolve) => {
+      try {
+        const scale = Math.min(1, THUMB_MAX_PX / Math.max(width, height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(width * scale));
+        canvas.height = Math.max(1, Math.round(height * scale));
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return resolve(null);
+        ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+        // toBlob é assíncrono e pode chamar de volta com null; o canvas
+        // também fica "tainted" (e lança) se a origem não for same-origin,
+        // daí o try/catch em volta de tudo.
+        canvas.toBlob((blob) => resolve(blob || null), 'image/jpeg', 0.72);
+      } catch (e) {
+        resolve(null);
       }
     });
   }
@@ -1415,16 +2446,23 @@
       uploadProgress.textContent = files.length > 1 ? `Enviando ${i + 1} de ${files.length}...` : `Enviando ${file.name}...`;
       uploadProgress.classList.remove('hidden');
 
-      const dims = await readMediaDimensions(file);
+      const meta = await readMediaMeta(file);
 
       const form = new FormData();
       form.append('file', file);
       form.append('sender', sender);
       if (i === 0 && replyToId) form.append('replyToId', replyToId);
       if (wantsEphemeral) form.append('ephemeral', '1');
-      if (dims) {
-        form.append('width', String(dims.width));
-        form.append('height', String(dims.height));
+      if (meta) {
+        form.append('width', String(meta.width));
+        form.append('height', String(meta.height));
+        // Visualização única não ganha miniatura: uma thumb persistente
+        // sobreviveria aos 10s e furaria o sentido inteiro do recurso. O
+        // servidor recusa de novo por conta própria, isto aqui só evita
+        // mandar os bytes à toa.
+        if (meta.thumb && !wantsEphemeral) {
+          form.append('thumb', meta.thumb, 'thumb.jpg');
+        }
       }
 
       try {
@@ -1463,7 +2501,10 @@
 
     try {
       const res = await fetch(api('/api/clear'), { method: 'POST' });
-      if (res.ok) resetMessagesView();
+      if (res.ok) {
+        resetMessagesView();
+        resetMediaPanel();
+      }
     } catch (err) {
       // ignora — a conversa simplesmente continua como estava
     }

@@ -22,6 +22,15 @@ const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '300', 10);
 // opens it. Configurable only so tests don't have to sleep 10 real
 // seconds - production always gets the real default.
 const EPHEMERAL_TTL_MS = parseInt(process.env.EPHEMERAL_TTL_MS || '10000', 10);
+// Teto pra miniatura enviada pelo cliente. O canvas gera algo entre 20 e
+// 60KB (400px, JPEG q0.72); 512KB é folga suficiente pra qualquer foto
+// esquisita e ainda assim recusa alguém tentando usar o campo "thumb" pra
+// guardar um arquivo grande de contrabando.
+const MAX_THUMB_BYTES = 512 * 1024;
+
+// Conjunto fixo de reações (estilo WhatsApp - sem teclado de emoji). Mantém
+// em sincronia com REACTION_EMOJIS em public/app.js.
+const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '🔥'];
 
 if (!ROOM_SLUG || ROOM_SLUG.length < 16) {
   console.error('ROOM_SLUG ausente ou muito curto. Configure um valor aleatorio e longo em .env');
@@ -209,11 +218,16 @@ async function scheduleLinkPreview(sessionKey, messageId, url) {
 
 function expireEphemeralMessage(data, msg) {
   if (msg.mediaId) store.deleteMediaFile(msg.mediaId);
+  // Mídia de visualização única nunca chega a ganhar thumbId (ver POST
+  // /api/media), mas apagar aqui também é uma linha e fecha a porta caso
+  // algum caminho futuro passe a gravar uma.
+  if (msg.thumbId) store.deleteMediaFile(msg.thumbId);
   msg.deleted = true;
   msg.deletedAt = Date.now();
   msg.expiredEphemeral = true;
   delete msg.text;
   delete msg.mediaId;
+  delete msg.thumbId;
   delete msg.filename;
   delete msg.mimeType;
   delete msg.size;
@@ -271,7 +285,7 @@ function reconcileEphemeral(sessionKey, data) {
 // endpoint either.
 function sanitizeMessage(msg) {
   if (msg.ephemeral && !msg.deleted) {
-    const { mediaId, filename, mimeType, size, width, height, ...rest } = msg;
+    const { mediaId, thumbId, filename, mimeType, size, width, height, ...rest } = msg;
     return rest;
   }
   return msg;
@@ -360,12 +374,22 @@ function requireAuth(req, res, next) {
 // We never re-ask for the plaintext code once a session exists; instead we keep
 // using the session's already-derived key directly against the store file.
 function loadWithSessionKey(req) {
+  const data = loadStoreOnly(req);
+  reconcileEphemeral(req.session.key, data);
+  return data;
+}
+
+// Mesmo trabalho do loadWithSessionKey, mas SEM reconcileEphemeral. Serve
+// só pra rota que entrega bytes de mídia: a grade da aba "Mídia" dispara
+// dezenas de requests seguidos, e cada um deles rodar a reconciliação
+// (que pode gravar no disco e emitir SSE) é caro e não tem nada a ver com
+// ler um arquivo. O self-heal continua acontecendo em todo o resto -
+// listar mensagens, enviar, apagar, reagir, exportar.
+function loadStoreOnly(req) {
   const blob = fs.readFileSync(store.storePath);
   const { decryptBuffer } = require('./lib/crypto');
   const plaintext = decryptBuffer(req.session.key, blob);
-  const data = JSON.parse(plaintext.toString('utf8'));
-  reconcileEphemeral(req.session.key, data);
-  return data;
+  return JSON.parse(plaintext.toString('utf8'));
 }
 
 const REPLY_SNIPPET_LABELS = {
@@ -401,10 +425,59 @@ function buildReplySnapshot(data, replyToId) {
   return { id: original.id, sender: original.sender, snippet };
 }
 
+// Paginação "mais recentes primeiro": sem parâmetros, devolve só o último
+// lote (as PAGE_SIZE mensagens mais novas); com ?before=<id> devolve o lote
+// imediatamente anterior a essa mensagem. O array no store já está em ordem
+// cronológica, então é só fatiar. A ordem de retorno continua ascendente
+// (mais antiga → mais nova) pra não mudar o contrato do renderMessage no
+// front. hasMore avisa se ainda existe histórico antes do início do lote.
+const MESSAGES_PAGE_DEFAULT = 50;
+const MESSAGES_PAGE_MAX = 200;
+
+// Quantas mensagens de contexto vêm ACIMA do alvo num salto (?from=). Zero
+// deixaria a mensagem colada no topo da lista, e um valor pequeno faria a
+// primeira rolagem pra cima já disparar loadOlderMessages na hora.
+const JUMP_CONTEXT_BEFORE = 20;
+
 roomRouter.get('/api/messages', requireAuth, (req, res) => {
   try {
     const data = loadWithSessionKey(req);
-    res.json({ messages: data.messages.map(sanitizeMessage) });
+    const all = data.messages;
+
+    // ?from=<id>: salto pra uma mensagem específica ("Ir para a mensagem", na
+    // aba Mídia). Devolve o RABO da conversa a partir dela - da mensagem-alvo
+    // (com JUMP_CONTEXT_BEFORE de contexto acima) até a mais nova, de uma vez.
+    // Ir até o fim é de propósito: loadedMessages no cliente é sempre um
+    // sufixo terminando na última mensagem, e é essa invariante que faz o
+    // append do SSE, o loadOlderMessages e o botão "ir pro fim" funcionarem
+    // sem um segundo cursor "hasMoreNewer" (que não existe). Uma janela
+    // centrada no alvo quebraria os três. Por isso `limit` também não vale
+    // aqui: cortar o lote deixaria um buraco entre ele e a mensagem mais nova.
+    if (req.query.from) {
+      const at = all.findIndex((m) => m.id === String(req.query.from));
+      if (at === -1) return res.status(404).json({ error: 'not_found' });
+      const from = Math.max(0, at - JUMP_CONTEXT_BEFORE);
+      return res.json({
+        messages: all.slice(from).map(sanitizeMessage),
+        hasMore: from > 0,
+      });
+    }
+
+    let limit = parseInt(req.query.limit, 10);
+    if (!Number.isFinite(limit) || limit <= 0) limit = MESSAGES_PAGE_DEFAULT;
+    limit = Math.min(limit, MESSAGES_PAGE_MAX);
+
+    let end = all.length;
+    if (req.query.before) {
+      const idx = all.findIndex((m) => m.id === String(req.query.before));
+      // Cursor desconhecido (mensagem apagada do array? nunca acontece hoje,
+      // mas seja defensivo) → trata como se não tivesse cursor.
+      if (idx !== -1) end = idx;
+    }
+    const start = Math.max(0, end - limit);
+    const slice = all.slice(start, end);
+
+    res.json({ messages: slice.map(sanitizeMessage), hasMore: start > 0 });
   } catch (e) {
     res.status(401).json({ error: 'unauthenticated' });
   }
@@ -444,12 +517,22 @@ roomRouter.post('/api/messages', requireAuth, express.json(), (req, res) => {
   }
 });
 
-roomRouter.post('/api/media', requireAuth, upload.single('file'), (req, res) => {
+// upload.fields (e não .single) porque além do arquivo em si o cliente manda
+// uma miniatura JPEG que ele mesmo gera num <canvas> antes de enviar (ver
+// readMediaMeta em app.js). Consequência: req.file não existe mais nesta
+// rota - o arquivo está em req.files.file[0].
+const uploadMediaFields = upload.fields([
+  { name: 'file', maxCount: 1 },
+  { name: 'thumb', maxCount: 1 },
+]);
+
+roomRouter.post('/api/media', requireAuth, uploadMediaFields, (req, res) => {
   const { sender, replyToId, ephemeral } = req.body || {};
-  if (!req.file || !sender || !String(sender).trim()) {
+  const file = req.files && req.files.file && req.files.file[0];
+  if (!file || !sender || !String(sender).trim()) {
     return res.status(400).json({ error: 'invalid' });
   }
-  // Intrinsic width/height, read client-side (see readMediaDimensions in
+  // Intrinsic width/height, read client-side (see readMediaMeta in
   // app.js) BEFORE upload and handed back with the message so the <img>/
   // <video> can reserve the right box on first paint instead of jumping
   // around as each file finishes downloading. Best-effort and optional -
@@ -461,7 +544,7 @@ roomRouter.post('/api/media', requireAuth, upload.single('file'), (req, res) => 
   }
   const mediaWidth = parseDimension(req.body && req.body.width);
   const mediaHeight = parseDimension(req.body && req.body.height);
-  const mime = req.file.mimetype || 'application/octet-stream';
+  const mime = file.mimetype || 'application/octet-stream';
   let type = 'file';
   if (mime.startsWith('image/')) type = 'image';
   else if (mime.startsWith('video/')) type = 'video';
@@ -470,15 +553,15 @@ roomRouter.post('/api/media', requireAuth, upload.single('file'), (req, res) => 
   try {
     const data = loadWithSessionKey(req);
     const mediaId = randomId(16);
-    store.saveMedia(req.session.key, mediaId, req.file.buffer);
+    store.saveMedia(req.session.key, mediaId, file.buffer);
     const message = {
       id: randomId(8),
       type,
       sender: String(sender).trim().slice(0, 60),
       mediaId,
-      filename: (req.file.originalname || 'arquivo').slice(0, 200),
+      filename: (file.originalname || 'arquivo').slice(0, 200),
       mimeType: mime,
-      size: req.file.size,
+      size: file.size,
       ts: Date.now(),
     };
     if (mediaWidth && mediaHeight) {
@@ -491,6 +574,20 @@ roomRouter.post('/api/media', requireAuth, upload.single('file'), (req, res) => 
     const wantsEphemeral = ephemeral === '1' || ephemeral === 'true' || ephemeral === true;
     if (wantsEphemeral && (type === 'image' || type === 'video')) {
       message.ephemeral = true;
+    }
+    // Miniatura pra grade da aba "Mídia": mais um blob cifrado em
+    // data/media/<id>.enc, com a mesma chave de sessão do original. Nunca
+    // para visualização única - uma thumb que sobrevive ao "expira em 10s"
+    // é exatamente o vazamento que o sanitizeMessage existe pra impedir.
+    // Opcional em todos os sentidos: se o cliente não conseguiu gerar (ver
+    // readMediaMeta), a mensagem simplesmente fica sem thumbId e a grade
+    // cai no caminho pesado.
+    const thumbFile = req.files && req.files.thumb && req.files.thumb[0];
+    if (thumbFile && !message.ephemeral && (type === 'image' || type === 'video')
+        && thumbFile.size > 0 && thumbFile.size <= MAX_THUMB_BYTES) {
+      const thumbId = randomId(16);
+      store.saveMedia(req.session.key, thumbId, thumbFile.buffer);
+      message.thumbId = thumbId;
     }
     const replyTo = buildReplySnapshot(data, replyToId);
     if (replyTo) message.replyTo = replyTo;
@@ -564,18 +661,56 @@ roomRouter.post('/api/messages/:id/delete', requireAuth, (req, res) => {
     const deletedBy = String(requesterName).trim();
 
     if (msg.mediaId) store.deleteMediaFile(msg.mediaId);
+    if (msg.thumbId) store.deleteMediaFile(msg.thumbId);
 
     msg.deleted = true;
     msg.deletedAt = Date.now();
     msg.deletedBy = deletedBy;
     delete msg.text;
     delete msg.mediaId;
+    delete msg.thumbId;
     delete msg.filename;
     delete msg.mimeType;
     delete msg.size;
 
     store.persist(req.session.key, data);
     bus.emit('message-deleted', { id: msg.id, sender: msg.sender, deletedAt: msg.deletedAt, deletedBy });
+    res.json({ ok: true, message: msg });
+  } catch (e) {
+    console.error(e);
+    res.status(401).json({ error: 'unauthenticated' });
+  }
+});
+
+// Reação a uma mensagem (❤️ 👍 😂 😮 😢 🔥). Uma reação por pessoa por
+// mensagem, com toggle: reagir com o mesmo emoji remove; com outro, troca.
+// Mesmo modelo de confiança do "apagar" - o servidor confia no requesterName
+// que o cliente manda (sala privada de 2 pessoas).
+roomRouter.post('/api/messages/:id/react', requireAuth, express.json(), (req, res) => {
+  const { requesterName, emoji } = req.body || {};
+  if (!requesterName || !String(requesterName).trim() || !REACTION_EMOJIS.includes(emoji)) {
+    return res.status(400).json({ error: 'invalid' });
+  }
+  try {
+    const data = loadWithSessionKey(req);
+    const msg = data.messages.find((m) => m.id === req.params.id);
+    if (!msg) return res.status(404).json({ error: 'not_found' });
+    if (msg.deleted) return res.json({ ok: true, message: msg });
+
+    const name = String(requesterName).trim();
+    if (!Array.isArray(msg.reactions)) msg.reactions = [];
+    const i = msg.reactions.findIndex((r) => r.sender === name);
+    if (i >= 0 && msg.reactions[i].emoji === emoji) {
+      msg.reactions.splice(i, 1);
+    } else if (i >= 0) {
+      msg.reactions[i] = { sender: name, emoji, ts: Date.now() };
+    } else {
+      msg.reactions.push({ sender: name, emoji, ts: Date.now() });
+    }
+    if (msg.reactions.length === 0) delete msg.reactions;
+
+    store.persist(req.session.key, data);
+    bus.emit('message-reacted', { id: msg.id, reactions: msg.reactions || [] });
     res.json({ ok: true, message: msg });
   } catch (e) {
     console.error(e);
@@ -594,18 +729,108 @@ roomRouter.post('/api/clear', requireAuth, (req, res) => {
   }
 });
 
+// Serve tanto o arquivo original (mediaId) quanto a miniatura (thumbId) -
+// os dois são só blobs cifrados em data/media/, o que muda é o Content-Type
+// e o nome sugerido.
 roomRouter.get('/api/media/:id', requireAuth, (req, res) => {
   try {
-    const data = loadWithSessionKey(req);
-    const msg = data.messages.find((m) => m.mediaId === req.params.id);
+    const data = loadStoreOnly(req);
+    const msg = data.messages.find(
+      (m) => m.mediaId === req.params.id || m.thumbId === req.params.id
+    );
     if (!msg) return res.status(404).end();
+    const isThumb = msg.thumbId === req.params.id;
     const buf = store.loadMedia(req.session.key, req.params.id);
-    res.setHeader('Content-Type', msg.mimeType || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(msg.filename || 'arquivo')}"`);
+    // A miniatura é sempre JPEG (foi gerada por canvas.toBlob). Usar o
+    // msg.mimeType aqui entregaria "video/mp4" pra thumb de um vídeo e o
+    // <img> da grade não renderizaria nada.
+    res.setHeader('Content-Type', isThumb ? 'image/jpeg' : (msg.mimeType || 'application/octet-stream'));
+    const name = isThumb ? 'miniatura.jpg' : (msg.filename || 'arquivo');
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(name)}"`);
     res.setHeader('Cache-Control', 'private, no-store');
     res.send(buf);
   } catch (e) {
     res.status(401).end();
+  }
+});
+
+// Retrofit das mídias enviadas antes das miniaturas existirem: a grade
+// carrega o original desses tiles (pesado, mas funciona), gera a thumb no
+// canvas e manda pra cá, uma por vez. Na próxima abertura o tile já é leve.
+// Mesma filosofia do reconcileEphemeral - conserta sozinho conforme o app
+// é usado, sem script de migração.
+roomRouter.post('/api/media/:mediaId/thumb', requireAuth, upload.single('thumb'), (req, res) => {
+  if (!req.file || !req.file.size || req.file.size > MAX_THUMB_BYTES) {
+    return res.status(400).json({ error: 'invalid' });
+  }
+  try {
+    const data = loadWithSessionKey(req);
+    const msg = data.messages.find((m) => m.mediaId === req.params.mediaId);
+    if (!msg) return res.status(404).json({ error: 'not_found' });
+    if (msg.deleted || msg.ephemeral) return res.status(403).json({ error: 'forbidden' });
+    if (msg.type !== 'image' && msg.type !== 'video') return res.status(400).json({ error: 'invalid' });
+    // Já tem: não desperdiça escrita nem deixa órfão o arquivo antigo.
+    if (msg.thumbId) return res.json({ ok: true, thumbId: msg.thumbId });
+
+    const thumbId = randomId(16);
+    store.saveMedia(req.session.key, thumbId, req.file.buffer);
+    msg.thumbId = thumbId;
+    store.persist(req.session.key, data);
+    res.json({ ok: true, thumbId });
+  } catch (e) {
+    console.error(e);
+    res.status(401).json({ error: 'unauthenticated' });
+  }
+});
+
+// Lista da aba "Mídia": só metadados de foto/vídeo, nenhum byte de arquivo.
+// Mesma paginação "mais recentes primeiro" do /api/messages, mas aqui a
+// ordem de saída é DECRESCENTE (mais nova primeiro), que é como a grade
+// mostra. O cursor `before` é o id da última mensagem já recebida.
+const MEDIA_PAGE_DEFAULT = 120;
+const MEDIA_PAGE_MAX = 400;
+
+roomRouter.get('/api/media-list', requireAuth, (req, res) => {
+  try {
+    const data = loadWithSessionKey(req);
+    const all = data.messages;
+
+    let limit = parseInt(req.query.limit, 10);
+    if (!Number.isFinite(limit) || limit <= 0) limit = MEDIA_PAGE_DEFAULT;
+    limit = Math.min(limit, MEDIA_PAGE_MAX);
+
+    let end = all.length;
+    if (req.query.before) {
+      const idx = all.findIndex((m) => m.id === String(req.query.before));
+      if (idx !== -1) end = idx;
+    }
+
+    // Anda de trás pra frente juntando só o que a grade aceita, até fechar
+    // o lote. `end` para na primeira mensagem que sobrou pra trás, então a
+    // próxima página continua exatamente daí.
+    const items = [];
+    let i = end - 1;
+    for (; i >= 0 && items.length < limit; i--) {
+      const m = all[i];
+      if (m.type !== 'image' && m.type !== 'video') continue;
+      if (m.deleted || m.ephemeral || !m.mediaId) continue;
+      if (!store.mediaExists(m.mediaId)) continue;
+      items.push({
+        id: m.id,
+        type: m.type,
+        mediaId: m.mediaId,
+        thumbId: m.thumbId,
+        width: m.width,
+        height: m.height,
+        sender: m.sender,
+        ts: m.ts,
+        filename: m.filename,
+      });
+    }
+
+    res.json({ items, hasMore: i >= 0 });
+  } catch (e) {
+    res.status(401).json({ error: 'unauthenticated' });
   }
 });
 
@@ -668,6 +893,13 @@ roomRouter.get('/api/stream', requireAuth, (req, res) => {
   };
   bus.on('message-updated', onMessageUpdated);
 
+  // Alguém reagiu (ou removeu a reação de) uma mensagem - patch parcial na
+  // bolha já renderizada, mesma ideia do message-updated acima.
+  const onReacted = (payload) => {
+    res.write(`event: message-reacted\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+  bus.on('message-reacted', onReacted);
+
   onlineConnections.set(connId, myPresenceName);
   broadcastPresence();
 
@@ -683,6 +915,7 @@ roomRouter.get('/api/stream', requireAuth, (req, res) => {
     bus.off('message-viewed', onViewed);
     bus.off('presence', onPresence);
     bus.off('message-updated', onMessageUpdated);
+    bus.off('message-reacted', onReacted);
   });
 });
 
@@ -711,11 +944,14 @@ roomRouter.get('/api/export', requireAuth, (req, res) => {
 
   const lines = data.messages.map((m) => {
     const when = new Date(m.ts).toLocaleString('pt-BR');
-    if (m.type === 'text') return `[${when}] ${m.sender}: ${m.text}`;
+    const reactions = (m.reactions && m.reactions.length)
+      ? ` [reações: ${m.reactions.map((r) => `${r.emoji} ${r.sender}`).join(', ')}]`
+      : '';
+    if (m.type === 'text') return `[${when}] ${m.sender}: ${m.text}${reactions}`;
     if (m.expiredEphemeral) return `[${when}] ${m.sender}: (mídia de visualização única, expirada)`;
-    if (m.ephemeral) return `[${when}] ${m.sender}: (${m.type}, visualização única - não incluída no backup)`;
+    if (m.ephemeral) return `[${when}] ${m.sender}: (${m.type}, visualização única - não incluída no backup)${reactions}`;
     if (m.deleted) return `[${when}] ${m.sender}: (mensagem apagada por ${m.deletedBy || m.sender})`;
-    return `[${when}] ${m.sender}: (${m.type}) ${m.filename || m.mediaId}`;
+    return `[${when}] ${m.sender}: (${m.type}) ${m.filename || m.mediaId}${reactions}`;
   });
   archive.append(lines.join('\n'), { name: 'conversa.txt' });
 

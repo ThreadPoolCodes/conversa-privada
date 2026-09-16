@@ -105,8 +105,8 @@ body::before {
   flex-direction: column;
 }
 
-/* ---- login ---- */
-#login-screen {
+/* ---- login / portao de nome ---- */
+#login-screen, #name-screen {
   align-items: center;
   justify-content: center;
   padding: 24px;
@@ -149,11 +149,31 @@ body::before {
   font-size: 14px;
 }
 
-#login-form {
+#login-form, #name-form {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
+
+/* Mesma caixa do #code-input, sem o letter-spacing/mascara e sem o espaco a
+   direita reservado pro botao de revelar - aqui o nome e pra ser lido mesmo. */
+#name-screen-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--card-2);
+  color: var(--ink);
+  border-radius: 14px;
+  padding: 14px 16px;
+  font-size: 16px; /* iOS Safari zooms the whole page on focus below 16px */
+  text-align: center;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+#name-screen-input::placeholder { color: var(--muted); }
+#name-screen-input:focus { border-color: var(--accent); box-shadow: var(--ring); }
 
 .code-input-wrap { position: relative; }
 
@@ -355,7 +375,7 @@ body::before {
 .msg-row:first-child { margin-top: 0; }
 /* Consecutive messages from the same author sit close together, WhatsApp/
    Telegram-style, instead of getting the full inter-group gap. */
-.msg-row.grouped { margin-top: 3px; }
+.msg-row.grouped { margin-top: 6px; }
 .msg-row.me { align-self: flex-end; align-items: flex-end; }
 .msg-row.them { align-self: flex-start; align-items: flex-start; }
 
@@ -432,6 +452,7 @@ body::before {
 }
 
 .bubble {
+  position: relative;
   min-width: 0;
   padding: 10px 14px;
   border-radius: var(--radius);
@@ -453,13 +474,14 @@ body::before {
      this is just enough to lift a bubble off the page background, not a
      drop shadow anyone should consciously notice. */
   box-shadow: 0 0.5px 0 rgba(0,0,0,0.14);
+  /* Toque longo sobre o balão abre o menu de contexto (Responder/Copiar/
+     Apagar), então o balão não pode iniciar seleção de texto nem o callout
+     nativo do iOS - mesmo comportamento do WhatsApp/Telegram, onde segurar
+     uma mensagem nunca seleciona o texto (copiar é item do menu). */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
-/* .msg-time floats inside the bubble (see below) so the last line of text
-   wraps around it, WhatsApp-style, instead of sitting on its own line
-   underneath. A float needs this to make the bubble's own height actually
-   contain it. */
-.bubble::after { content: ""; display: table; clear: both; }
-
 .msg-row.me .bubble {
   background: var(--bubble-me);
   border-color: var(--bubble-me-border);
@@ -470,6 +492,12 @@ body::before {
   border-color: var(--bubble-them-border);
   border-bottom-left-radius: 6px;
 }
+/* Numa sequência de balões seguidos do mesmo remetente, só o ÚLTIMO do grupo
+   mantém o canto "apontado" - os de cima ficam todos arredondados, como no
+   WhatsApp. .has-follower entra na linha quando a mensagem seguinte é agrupada
+   com ela (ver renderMessage em app.js). */
+.msg-row.me.has-follower .bubble { border-bottom-right-radius: var(--radius); }
+.msg-row.them.has-follower .bubble { border-bottom-left-radius: var(--radius); }
 
 .msg-link {
   color: var(--accent);
@@ -576,6 +604,7 @@ body::before {
   display: block;
   cursor: pointer;
   transition: filter .1s ease;
+  -webkit-touch-callout: none; /* mata o "Salvar imagem" do iOS no toque longo */
 }
 .bubble img:active, .bubble video:active { filter: brightness(0.85); }
 
@@ -593,6 +622,7 @@ body::before {
   position: absolute;
   right: 6px;
   bottom: 6px;
+  transform: none;
   background: rgba(0, 0, 0, 0.55);
   color: #f2f2f2;
   padding: 2px 7px;
@@ -670,14 +700,34 @@ body::before {
 }
 
 .msg-time {
-  float: right;
-  clear: both;
+  /* Estilo WhatsApp: a hora fica ancorada no canto inferior direito do
+     balão (distância fixa), e a última linha do texto reserva um vão do
+     tamanho dela (.bubble-text::after) pra ela caber ao lado quando sobra
+     espaço - senão o vão quebra sozinho e a hora fica numa "linha" só dela.
+     Bolhas de mídia são a exceção: lá é a pílula sobreposta
+     .msg-time-overlay. Arquivo / visualização única (flex) voltam pro
+     fluxo logo abaixo. */
+  position: absolute;
+  right: 12px;
+  bottom: 7px;
+  float: none;
+  transform: none;
   font-size: 11px;
   color: var(--muted);
-  margin: 4px 0 -2px 10px;
   line-height: 1;
   white-space: nowrap;
 }
+
+/* Vão invisível no fim do texto, da largura da hora - é o que deixa a
+   última linha "abrir espaço" pra ela (ou quebrar limpo quando não cabe). */
+.bubble-text::after {
+  content: "\00a0";
+  display: inline-block;
+  width: 42px;
+}
+
+/* Áudio não tem .bubble-text pra reservar o vão: reserva na marra embaixo. */
+.bubble:has(audio) { padding-bottom: 24px; }
 
 /* Locked "visualização única" placeholder bubble. */
 .bubble.ephemeral-locked {
@@ -692,43 +742,8 @@ body::before {
 .ephemeral-icon { display: flex; flex-shrink: 0; color: var(--accent); }
 .ephemeral-icon svg { width: 18px; height: 18px; }
 .ephemeral-label { font-size: 15px; flex: 1; }
-.bubble.ephemeral-locked .msg-time { margin-left: 8px; }
-
-.msg-actions {
-  display: flex;
-  gap: 2px;
-  margin: 1px -6px 0;
-}
-
-/* Small icon buttons, not underlined text links - a permanent "reply |
-   delete" hyperlink under every bubble is the fastest way for a chat UI to
-   read as a web page instead of an app. Padding pads out the real tap
-   target well past the visible 14px icon without inflating the layout. */
-.msg-action-btn {
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 7px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0.6;
-  -webkit-appearance: none;
-  appearance: none;
-  -webkit-user-select: none;
-  user-select: none;
-  -webkit-touch-callout: none;
-  touch-action: manipulation;
-  transition: opacity .12s ease, background-color .12s ease, transform .1s cubic-bezier(.32,.72,0,1), color .12s ease;
-}
-.msg-action-btn svg { width: 14px; height: 14px; }
-
-.msg-action-btn:hover { opacity: 1; color: var(--ink); background: rgba(255,255,255,0.06); }
-.msg-action-btn:active { opacity: 1; transform: scale(0.88); background: rgba(255,255,255,0.1); }
-.msg-action-btn.is-danger:hover { color: var(--danger); }
-.msg-action-btn.is-danger:active { color: var(--danger); }
+.bubble.file-bubble .msg-time,
+.bubble.ephemeral-locked .msg-time { position: static; margin-left: auto; transform: none; }
 
 .reply-bar {
   display: flex;
@@ -943,6 +958,29 @@ body::before {
 .center-state svg { width: 34px; height: 34px; opacity: 0.6; }
 .center-state p { margin: 0; line-height: 1.5; }
 
+/* Indicador de "carregando mensagens anteriores": flutua sobre o topo da área
+   de mensagens (fora do fluxo, igual ao botão de ir-pra-base) enquanto a
+   paginação pra trás busca o próximo lote - assim aparecer/sumir não empurra o
+   conteúdo nem causa "pulo" no scroll (ver loadOlderMessages). */
+.loading-older {
+  position: absolute;
+  top: calc(64px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow-2);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .spin-dot {
   width: 8px;
   height: 8px;
@@ -1022,6 +1060,276 @@ body::before {
   transition: background-color .1s ease, transform .1s cubic-bezier(.32,.72,0,1);
 }
 .lightbox-close:active { background: rgba(255,255,255,0.18); transform: scale(0.92); }
+
+/* ---- aba de mídia ---- */
+
+/* z-index 45: por cima de tudo do chat (header 5, botões 6), mas por baixo
+   do lightbox (50) - clicar num tile abre a mídia cheia SOBRE o painel.
+   A altura vem de --app-height, nunca de 100vh: é a única medida que o
+   app.js mantém em sincronia com o teclado do iOS (ver o topo do arquivo). */
+.media-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  height: var(--app-height);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(160deg, var(--bg-1), var(--bg-2));
+}
+
+.media-panel .title { flex: 1; }
+
+.media-count {
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.media-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* .center-state usa margin:auto, que só centraliza de verdade dentro de um
+   flex container - aqui o pai é um bloco com scroll, então o espaçamento
+   vertical é explícito. */
+.media-scroll .center-state { margin: 48px auto; }
+
+/* auto-fill + minmax deixa a grade responder à largura sozinha: 3 colunas
+   num iPhone, 6+ num desktop, sem media query. */
+.media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 3px;
+  padding: 3px;
+}
+
+.media-month {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 16px 6px 6px;
+}
+.media-month:first-child { padding-top: 8px; }
+
+.media-tile {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  overflow: hidden;
+  /* Fundo enquanto a miniatura não chega - o tile já ocupa o lugar certo,
+     então a grade nunca "pula" conforme as imagens carregam. */
+  background: var(--card);
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  touch-action: manipulation;
+  /* O toque longo aqui é NOSSO gesto (abre o menu do tile). Sem isso o iOS
+     abre a folha nativa de "Salvar imagem" por cima, e o Android/desktop
+     começa a selecionar. Mesma proteção que .bubble img já tinha. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  transition: transform .1s cubic-bezier(.32,.72,0,1), opacity .1s ease;
+}
+.media-tile:active { transform: scale(0.96); opacity: 0.85; }
+
+.media-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  transition: opacity .18s ease;
+}
+/* Só aparece depois do load pra não piscar o alt/quadro vazio no meio do
+   fade da miniatura. */
+.media-tile img.is-loaded { opacity: 1; }
+
+/* Vídeo antigo, sem miniatura: o tile fica sendo só o ícone. */
+.media-tile-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  opacity: 0.55;
+}
+.media-tile-placeholder svg { width: 30px; height: 30px; }
+
+.media-tile-badge {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: rgba(5, 6, 9, 0.6);
+  color: #fff;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.media-tile-badge svg { width: 10px; height: 10px; }
+
+/* Alvo do IntersectionObserver de scroll infinito. Sem altura o observer
+   nunca dispara em alguns navegadores. */
+.media-sentinel { height: 1px; }
+
+/* ---- menu de contexto da mensagem ---- */
+
+/* Backdrop invisível: cobre a tela toda só pra capturar o toque/clique de
+   fora (e o segundo clique direito) e fechar o menu. */
+.msg-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: transparent;
+}
+
+/* Cartãozinho flutuante, mesma linguagem do .confirm-card: superfície
+   var(--card), traço de 1px var(--border), cantos arredondados, sombra
+   var(--shadow-2). Posicionado via left/top inline pelo app.js. */
+.msg-menu {
+  position: fixed;
+  z-index: 56;
+  min-width: 176px;
+  padding: 5px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-2), inset 0 1px 0 rgba(255,255,255,0.03);
+  display: flex;
+  flex-direction: column;
+  transform-origin: top left;
+  opacity: 0;
+  transform: scale(0.94);
+  transition: opacity .12s ease, transform .14s cubic-bezier(.32,.72,0,1);
+}
+.msg-menu.is-in { opacity: 1; transform: scale(1); }
+
+.msg-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 14px;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+  text-align: left;
+  border-radius: 10px;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+  transition: background-color .1s ease;
+}
+.msg-menu-item svg { width: 18px; height: 18px; flex-shrink: 0; color: var(--muted); }
+.msg-menu-item:hover { background: rgba(255,255,255,0.06); }
+.msg-menu-item:active { background: rgba(255,255,255,0.10); }
+.msg-menu-item.is-danger { color: var(--danger); }
+.msg-menu-item.is-danger svg { color: var(--danger); }
+.msg-menu-item.is-danger:active { background: rgba(224,104,90,0.12); }
+
+/* Barra de reação no topo do menu de contexto: 6 emojis fixos. */
+.msg-menu-reactions {
+  display: flex;
+  gap: 2px;
+  padding: 4px 2px 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.reaction-pick {
+  flex: 1;
+  font: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  height: 40px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+  transition: background-color .1s ease, transform .1s ease;
+}
+.reaction-pick:hover { background: rgba(255,255,255,0.08); }
+.reaction-pick:active { background: rgba(255,255,255,0.12); transform: scale(0.92); }
+.reaction-pick.is-mine { background: var(--bubble-me); }
+
+/* Chips de reação: sobrepõem um pouquinho a borda de baixo do balão (estilo
+   WhatsApp) - margin-top negativo puxa pra cima, z-index deixa por cima. O
+   lado é o OPOSTO ao do timestamp flutuante (esquerda no meu balão, direita
+   no da outra pessoa) pra não cobrir a hora. */
+.msg-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  /* Sobe uns ~10% da própria altura por cima da base do balão - um
+     encaixe leve, sem enterrar a reação na bolha. */
+  margin-top: -4px;
+  position: relative;
+  z-index: 2;
+}
+.msg-row.me .msg-reactions { align-self: flex-start; margin-left: 10px; }
+.msg-row.them .msg-reactions { align-self: flex-end; margin-right: 10px; }
+.reaction-chip {
+  display: inline-flex;
+  font: inherit;
+  align-items: center;
+  gap: 3px;
+  /* Emoji grande dentro de uma pílula folgada; fundo discreto pra não
+     competir com o balão, mas a pílula em si é bem visível. */
+  padding: 3px 9px;
+  font-size: 15px;
+  line-height: 1.2;
+  border-radius: 999px;
+  background: var(--card-2);
+  border: 1px solid var(--bg-1);
+  color: var(--ink);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+  transition: background-color .12s ease;
+}
+/* Número da contagem menor e apagado ao lado do emoji. */
+.reaction-chip .reaction-count { font-size: 11px; opacity: 0.6; margin-left: 1px; }
+.reaction-chip:hover { background: var(--bg-1); }
+.reaction-chip.mine { border-color: var(--accent); }
 
 /* ---- confirm modal ---- */
 .confirm-overlay {

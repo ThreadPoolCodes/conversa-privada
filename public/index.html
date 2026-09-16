@@ -35,11 +35,30 @@
   </div>
 </div>
 
+<!-- Portão de nome: a identidade (nome de exibição) decide de que lado cada
+     bolha aparece, então ela não pode estar vazia quando o chat renderiza.
+     showChat() manda pra cá quem ainda não tem nome salvo neste navegador. -->
+<div id="name-screen" class="screen hidden">
+  <div class="login-card">
+    <div class="login-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.75"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>
+    </div>
+    <p class="login-hint">Como você quer aparecer na conversa?</p>
+    <form id="name-form">
+      <input id="name-screen-input" type="text" maxlength="60" placeholder="seu nome" autocomplete="off" autocapitalize="words" autocorrect="off" spellcheck="false" name="not-a-real-name-field" />
+      <button type="submit">Continuar</button>
+    </form>
+  </div>
+</div>
+
 <div id="chat-screen" class="screen hidden">
   <header class="chat-header">
     <span class="dot"></span>
     <span class="title">conversa</span>
     <div class="header-actions">
+      <button id="media-btn" class="icon-btn" title="Mídia">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/></svg>
+      </button>
       <button id="export-btn" class="icon-btn" title="Exportar backup">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 11l5 5 5-5"/><path d="M5 19.5h14"/></svg>
       </button>
@@ -51,6 +70,11 @@
       </button>
     </div>
   </header>
+
+  <div id="loading-older" class="loading-older hidden">
+    <span class="spin-dot"></span>
+    <span>carregando mensagens anteriores</span>
+  </div>
 
   <div id="messages" class="messages">
     <div id="loading-state" class="center-state hidden">
@@ -101,6 +125,34 @@
   </div>
 </div>
 
+<!-- Aba "Mídia": painel de tela cheia por cima do chat (mas por baixo do
+     lightbox, que abre em cima dele). Não é rota - o api() do app.js deriva
+     o caminho da sala de location.pathname, então mexer na URL quebraria
+     todos os requests. Fica montado no DOM depois de aberto uma vez: é isso
+     que evita rebaixar todas as miniaturas a cada reabertura, já que
+     /api/media responde com Cache-Control: no-store. -->
+<div id="media-panel" class="media-panel hidden">
+  <header class="chat-header">
+    <button type="button" id="media-back" class="icon-btn" title="Voltar para a conversa" aria-label="Voltar para a conversa">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5 8 12l6.5 6.5"/></svg>
+    </button>
+    <span class="title">Mídia</span>
+    <span id="media-count" class="media-count"></span>
+  </header>
+  <div id="media-scroll" class="media-scroll">
+    <div id="media-grid" class="media-grid"></div>
+    <div id="media-sentinel" class="media-sentinel"></div>
+    <div id="media-loading" class="center-state hidden">
+      <span class="spin-dot"></span>
+      <span>carregando</span>
+    </div>
+    <div id="media-empty" class="center-state hidden">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.6" fill="currentColor" stroke="none"/><path d="M5 17.5l4.5-5 3.5 3.5 2-2.2L20 17.5"/></svg>
+      <p>Nenhuma foto ou vídeo ainda.<br>O que vocês mandarem aparece aqui.</p>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast hidden"></div>
 
 <div id="lightbox" class="lightbox hidden">
@@ -118,6 +170,42 @@
       <button id="confirm-ok" class="confirm-btn confirm-danger">Continuar</button>
     </div>
   </div>
+</div>
+
+<!-- Menu de contexto. Abre com clique direito no desktop ou toque longo
+     (~480ms) - igual aos apps de mensagem de verdade, que não deixam botão
+     fixo no balão. O backdrop é transparente e cobre a tela só pra capturar o
+     toque/clique "de fora" e fechar.
+     O MESMO menu serve dois lugares, e o app.js esconde o que não cabe em
+     cada um (ver openMessageMenu / openMediaTileMenu):
+       - balão do chat: reações + Responder + Copiar (só texto) + Apagar;
+       - tile da aba Mídia: Ir para a mensagem. -->
+<div id="msg-menu-backdrop" class="msg-menu-backdrop hidden"></div>
+<div id="msg-menu" class="msg-menu hidden" role="menu" aria-label="Ações da mensagem">
+  <div id="msg-menu-reactions" class="msg-menu-reactions">
+    <button type="button" class="reaction-pick" data-emoji="❤️" aria-label="Reagir com ❤️">❤️</button>
+    <button type="button" class="reaction-pick" data-emoji="👍" aria-label="Reagir com 👍">👍</button>
+    <button type="button" class="reaction-pick" data-emoji="😂" aria-label="Reagir com 😂">😂</button>
+    <button type="button" class="reaction-pick" data-emoji="😮" aria-label="Reagir com 😮">😮</button>
+    <button type="button" class="reaction-pick" data-emoji="😢" aria-label="Reagir com 😢">😢</button>
+    <button type="button" class="reaction-pick" data-emoji="🔥" aria-label="Reagir com 🔥">🔥</button>
+  </div>
+  <button type="button" id="msg-menu-goto" class="msg-menu-item" role="menuitem">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 11.5a7.5 7.5 0 0 1-10.9 6.7L4.5 19.5l1.3-5.1A7.5 7.5 0 1 1 20.5 11.5Z"/><path d="M12.5 8.5 9.5 11.5l3 3"/><path d="M9.5 11.5h5.5"/></svg>
+    <span>Ir para a mensagem</span>
+  </button>
+  <button type="button" id="msg-menu-reply" class="msg-menu-item" role="menuitem">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6 4 11l5 5"/><path d="M4 11h9a6 6 0 0 1 6 6v1.5"/></svg>
+    <span>Responder</span>
+  </button>
+  <button type="button" id="msg-menu-copy" class="msg-menu-item" role="menuitem">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg>
+    <span>Copiar</span>
+  </button>
+  <button type="button" id="msg-menu-delete" class="msg-menu-item is-danger" role="menuitem">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14"/><path d="M7 7l.8 12.1a2 2 0 0 0 2 1.9h4.4a2 2 0 0 0 2-1.9L17 7"/><path d="M9.5 7V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v2"/></svg>
+    <span>Apagar</span>
+  </button>
 </div>
 
 <div id="love-overlay" class="confirm-overlay love-overlay hidden">
