@@ -99,6 +99,7 @@
   const msgMenuGotoBtn = document.getElementById('msg-menu-goto');
   const msgMenuReplyBtn = document.getElementById('msg-menu-reply');
   const msgMenuCopyBtn = document.getElementById('msg-menu-copy');
+  const msgMenuSelectBtn = document.getElementById('msg-menu-select');
   const msgMenuDelBtn = document.getElementById('msg-menu-delete');
   const msgMenuReactions = document.getElementById('msg-menu-reactions');
   const reactionPicks = msgMenu.querySelectorAll('.reaction-pick');
@@ -351,8 +352,10 @@
     // E o nosso timer de toque longo quase juntos): não reposiciona, ignora.
     if (activeMenuMsgId === id) return;
 
-    // "Copiar" só faz sentido em texto.
-    msgMenuCopyBtn.classList.toggle('hidden', m.type !== 'text' || !m.text);
+    // "Copiar" e "Selecionar texto" só fazem sentido em texto.
+    const isSelectableText = m.type === 'text' && !!m.text;
+    msgMenuCopyBtn.classList.toggle('hidden', !isSelectableText);
+    msgMenuSelectBtn.classList.toggle('hidden', !isSelectableText);
     msgMenuGotoBtn.classList.add('hidden');   // já estamos na conversa
     msgMenuReplyBtn.classList.remove('hidden');
     msgMenuDelBtn.classList.remove('hidden');
@@ -379,6 +382,7 @@
     msgMenuGotoBtn.classList.remove('hidden');
     msgMenuReplyBtn.classList.add('hidden');
     msgMenuCopyBtn.classList.add('hidden');
+    msgMenuSelectBtn.classList.add('hidden');
     msgMenuDelBtn.classList.add('hidden');
     msgMenuReactions.classList.add('hidden');
 
@@ -504,6 +508,42 @@
     }
     toast(legacyCopy(m.text) ? 'Mensagem copiada.' : 'Cópia não suportada neste navegador.');
   });
+
+  // "Selecionar texto": em toque, o próprio toque longo já é tomado pelo
+  // nosso menu (ver a regra @media (pointer: coarse) em .bubble no CSS), e
+  // não dá pra "emprestar" pro navegador uma seleção nativa já em
+  // andamento - o gesto de arrastar os alças de seleção do sistema só
+  // começa a partir de um toque longo cru, sem nosso timer no meio. Por
+  // isso este item não seleciona nada sozinho: ele desarma nosso gesto
+  // NESSE balão (attachMenuGestures passa a ignorá-lo, ver resolve() logo
+  // abaixo) e liga user-select nele via .text-select-armed, então o
+  // PRÓXIMO toque longo ali vira um toque longo nativo de verdade.
+  let armedBubbleEl = null;
+  function disarmSelectableBubble() {
+    if (!armedBubbleEl) return;
+    armedBubbleEl.classList.remove('text-select-armed');
+    armedBubbleEl = null;
+    document.removeEventListener('pointerdown', onOutsideArmedPointerdown, true);
+    document.removeEventListener('keydown', onArmedKey);
+  }
+  function onOutsideArmedPointerdown(e) {
+    if (armedBubbleEl && !armedBubbleEl.contains(e.target)) disarmSelectableBubble();
+  }
+  function onArmedKey(e) {
+    if (e.key === 'Escape') disarmSelectableBubble();
+  }
+  msgMenuSelectBtn.addEventListener('click', () => {
+    const id = activeMenuMsgId;
+    closeMessageMenu();
+    disarmSelectableBubble();
+    const bubble = id && messagesEl.querySelector(`.msg-row[data-id="${id}"] .bubble`);
+    if (!bubble) return;
+    armedBubbleEl = bubble;
+    bubble.classList.add('text-select-armed');
+    document.addEventListener('pointerdown', onOutsideArmedPointerdown, true);
+    document.addEventListener('keydown', onArmedKey);
+  });
+
   msgMenuDelBtn.addEventListener('click', () => {
     const id = activeMenuMsgId;
     closeMessageMenu();           // fecha antes: askConfirm assume a tela
@@ -618,6 +658,9 @@
   attachMenuGestures(messagesEl, messagesEl, (e) => {
     const bubble = e.target.closest('.bubble');
     if (!bubble || bubble.classList.contains('deleted')) return null;
+    // Balão armado por "Selecionar texto": esse toque longo é do navegador,
+    // não nosso - ver msgMenuSelectBtn acima.
+    if (bubble.classList.contains('text-select-armed')) return null;
     // Controles nativos de áudio/vídeo precisam do gesto pra eles.
     if (e.type === 'pointerdown' && e.target.closest('audio, video')) return null;
     const row = bubble.closest('.msg-row');

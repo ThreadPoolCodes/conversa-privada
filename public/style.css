@@ -506,6 +506,19 @@ body::before {
     user-select: none;
   }
 }
+/* "Selecionar texto" no menu (ver msgMenuSelectBtn em app.js) arma esta
+   classe num balão específico: religa seleção e o callout nativo do iOS só
+   nele, e attachMenuGestures passa a ignorar esse balão (resolve() devolve
+   null), então o próximo toque longo vira toque longo *nativo* de verdade -
+   handles de seleção do sistema, sem nosso menu/backdrop competindo pelo
+   mesmo gesto. Precedência sobre a regra de pointer:coarse acima por vir
+   depois dela no arquivo. */
+.bubble.text-select-armed {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+  box-shadow: var(--ring);
+}
 .msg-row.me .bubble {
   background: var(--bubble-me);
   border-color: var(--bubble-me-border);
