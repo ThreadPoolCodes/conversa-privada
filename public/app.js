@@ -2310,6 +2310,11 @@
   });
 
   const sendBtn = composer.querySelector('.send-btn');
+  // No iOS, tocar em qualquer botão tira o foco do textarea antes do
+  // evento de submit rodar, fechando o teclado a cada envio. preventDefault
+  // no mousedown evita essa troca de foco (o click/submit continua normal),
+  // então o teclado só fecha quando o usuário realmente toca fora.
+  sendBtn.addEventListener('mousedown', (e) => e.preventDefault());
   function updateSendBtnState() {
     sendBtn.classList.toggle('is-empty', !textInput.value.trim());
   }
