@@ -2432,14 +2432,13 @@
       if (e.key === 'Escape') close();
     }
 
-    function show() {
-      if (open) return;
-      onShow();
-      open = true;
-      btn.setAttribute('aria-expanded', 'true');
-      backdrop.classList.remove('hidden');
-      menu.classList.remove('hidden');
-
+    // Recomputa a posição em cima do botão. Chamada de novo (não só no
+    // show()) enquanto o menu está aberto porque o botão "+" mora no
+    // composer, que sobe junto com --app-height quando o teclado do iOS
+    // abre (ver syncViewportHeight) - sem reposicionar, o menu ficava
+    // travado nas coordenadas de antes do teclado e o #name-input (o único
+    // campo digitável que vive aqui) acabava escondido atrás do teclado.
+    function reposition() {
       const rect = btn.getBoundingClientRect();
       const mw = menu.offsetWidth;
       const mh = menu.offsetHeight;
@@ -2457,8 +2456,25 @@
 
       menu.style.left = `${x}px`;
       menu.style.top = `${y}px`;
+    }
+
+    function show() {
+      if (open) return;
+      onShow();
+      open = true;
+      btn.setAttribute('aria-expanded', 'true');
+      backdrop.classList.remove('hidden');
+      menu.classList.remove('hidden');
+      reposition();
       menu.classList.add('is-in');
       document.addEventListener('keydown', onKey);
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', reposition);
+        // Mesmo motivo do listener de 'scroll' em syncViewportHeight: no
+        // iOS focar o #name-input às vezes dispara 'scroll' na
+        // visualViewport em vez de (ou além de) 'resize'.
+        window.visualViewport.addEventListener('scroll', reposition);
+      }
     }
 
     function close() {
@@ -2469,6 +2485,10 @@
       menu.classList.remove('is-in');
       backdrop.classList.add('hidden');
       document.removeEventListener('keydown', onKey);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', reposition);
+        window.visualViewport.removeEventListener('scroll', reposition);
+      }
     }
 
     btn.addEventListener('click', () => (open ? close() : show()));
