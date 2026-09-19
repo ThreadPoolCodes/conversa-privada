@@ -43,8 +43,16 @@
   const nameInput = document.getElementById('name-input');
   const textInput = document.getElementById('text-input');
   const fileInput = document.getElementById('file-input');
-  const attachBtn = document.getElementById('attach-btn');
-  const ephemeralToggleBtn = document.getElementById('ephemeral-toggle-btn');
+  const cameraInput = document.getElementById('camera-input');
+  const plusBtn = document.getElementById('plus-btn');
+  const plusMenu = document.getElementById('plus-menu');
+  const plusMenuBackdrop = document.getElementById('plus-menu-backdrop');
+  const cameraBtn = document.getElementById('camera-btn');
+  const cameraMenu = document.getElementById('camera-menu');
+  const cameraMenuBackdrop = document.getElementById('camera-menu-backdrop');
+  const cameraMenuNormalBtn = document.getElementById('camera-menu-normal');
+  const cameraMenuEphemeralBtn = document.getElementById('camera-menu-ephemeral');
+  const cameraMenuAttachBtn = document.getElementById('camera-menu-attach');
   const exportBtn = document.getElementById('export-btn');
   const clearBtn = document.getElementById('clear-btn');
   const logoutBtn = document.getElementById('logout-btn');
@@ -886,7 +894,7 @@
 
   async function handleDeleteClick(id) {
     if (!myName()) {
-      nameInput.focus();
+      focusNameInput();
       return;
     }
     const ok = await askConfirm('Apagar esta mensagem para os dois? Vai ficar marcado que você apagou.', 'Apagar');
@@ -1079,7 +1087,7 @@
   async function sendReaction(id, emoji) {
     if (!REACTION_EMOJIS.includes(emoji)) return;
     if (!myName()) {
-      nameInput.focus();
+      focusNameInput();
       return;
     }
     try {
@@ -1775,6 +1783,7 @@
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (activeMenuMsgId !== null) return;
+    if (cameraMenuCtl.isOpen() || plusMenuCtl.isOpen()) return;
     if (!lightbox.classList.contains('hidden')) {
       lightbox.classList.add('hidden');
     } else if (isMediaPanelOpen()) {
@@ -2236,7 +2245,7 @@
     const text = textInput.value.trim();
     const sender = myName();
     if (!sender) {
-      nameInput.focus();
+      focusNameInput();
       return;
     }
     if (!text) return;
@@ -2275,22 +2284,95 @@
   textInput.addEventListener('input', updateSendBtnState);
   updateSendBtnState();
 
-  attachBtn.addEventListener('click', () => fileInput.click());
+  // Miolo comum aos dois menus flutuantes do composer (câmera e "+"):
+  // posiciona acima do botão que abriu, travado nas bordas da viewport
+  // visível (teclado incluído), e fecha por Escape ou clique no backdrop.
+  // `onShow` existe só pra fechar o OUTRO menu - os dois nunca ficam
+  // abertos ao mesmo tempo, senão iam se sobrepor.
+  function makeFloatingMenu(menu, backdrop, btn, onShow) {
+    let open = false;
 
-  // "Visualização única" toggle: arms the NEXT attachment (or batch of
-  // attachments) to be sent as view-once media. Resets itself after each
-  // send rather than staying on indefinitely, so it can't be left armed by
-  // accident for some unrelated later photo.
-  let ephemeralArmed = false;
-  function setEphemeralArmed(v) {
-    ephemeralArmed = v;
-    ephemeralToggleBtn.classList.toggle('is-armed', v);
-    ephemeralToggleBtn.setAttribute('aria-pressed', String(v));
-    ephemeralToggleBtn.title = v
-      ? 'Visualização única ativada — a próxima foto/vídeo expira 10s depois de aberta'
-      : 'Ativar visualização única (mídia expira 10s depois de aberta)';
+    function onKey(e) {
+      if (e.key === 'Escape') close();
+    }
+
+    function show() {
+      if (open) return;
+      onShow();
+      open = true;
+      btn.setAttribute('aria-expanded', 'true');
+      backdrop.classList.remove('hidden');
+      menu.classList.remove('hidden');
+
+      const rect = btn.getBoundingClientRect();
+      const mw = menu.offsetWidth;
+      const mh = menu.offsetHeight;
+      const vv = window.visualViewport;
+      const vw = (vv && vv.width) || window.innerWidth;
+      const vh = (vv && vv.height) || window.innerHeight;
+      const offX = vv ? vv.offsetLeft : 0;
+      const offY = vv ? vv.offsetTop : 0;
+      const pad = 8;
+
+      let x = rect.right - mw;
+      let y = rect.top - mh - 4;
+      x = Math.max(offX + pad, Math.min(x, offX + vw - mw - pad));
+      y = Math.max(offY + pad, Math.min(y, offY + vh - mh - pad));
+
+      menu.style.left = `${x}px`;
+      menu.style.top = `${y}px`;
+      menu.classList.add('is-in');
+      document.addEventListener('keydown', onKey);
+    }
+
+    function close() {
+      if (!open) return;
+      open = false;
+      btn.setAttribute('aria-expanded', 'false');
+      menu.classList.add('hidden');
+      menu.classList.remove('is-in');
+      backdrop.classList.add('hidden');
+      document.removeEventListener('keydown', onKey);
+    }
+
+    btn.addEventListener('click', () => (open ? close() : show()));
+    backdrop.addEventListener('click', close);
+
+    return { open: show, close, isOpen: () => open };
   }
-  ephemeralToggleBtn.addEventListener('click', () => setEphemeralArmed(!ephemeralArmed));
+
+  const cameraMenuCtl = makeFloatingMenu(cameraMenu, cameraMenuBackdrop, cameraBtn, () => plusMenuCtl.close());
+  const plusMenuCtl = makeFloatingMenu(plusMenu, plusMenuBackdrop, plusBtn, () => cameraMenuCtl.close());
+
+  // A opção do menu de câmera decide sozinha, no momento do clique, se
+  // aquela foto/vídeo é visualização única - não é um estado que fica
+  // ligado/desligado por aí, então não tem como "esquecer armado" de um
+  // envio pro próximo.
+  let pendingCameraEphemeral = false;
+
+  cameraMenuNormalBtn.addEventListener('click', () => {
+    cameraMenuCtl.close();
+    pendingCameraEphemeral = false;
+    cameraInput.click();
+  });
+  cameraMenuEphemeralBtn.addEventListener('click', () => {
+    cameraMenuCtl.close();
+    pendingCameraEphemeral = true;
+    cameraInput.click();
+  });
+  cameraMenuAttachBtn.addEventListener('click', () => {
+    cameraMenuCtl.close();
+    fileInput.click();
+  });
+
+  // Foca o campo de nome pras rotas que precisam de um myName() não-vazio
+  // (enviar mensagem, apagar, reagir, anexar) - o campo mora dentro do
+  // menu "+" agora, então precisa abrir o menu primeiro ou o focus() não
+  // teria nada visível pra mostrar.
+  function focusNameInput() {
+    plusMenuCtl.open();
+    nameInput.focus();
+  }
 
   // Reads the intrinsic width/height of an image or video File BEFORE it's
   // uploaded (decoding it locally via a throwaway object URL - never
@@ -2419,18 +2501,17 @@
     });
   }
 
-  fileInput.addEventListener('change', async () => {
-    const files = Array.from(fileInput.files || []);
-    fileInput.value = '';
+  // Miolo comum aos dois inputs de arquivo (galeria via fileInput, câmera
+  // via cameraInput) - cada um só decide de onde vêm os File objects e se
+  // esse lote é visualização única antes de chamar isto.
+  async function uploadFiles(files, wantsEphemeral) {
     if (!files.length) return;
     const sender = myName();
     if (!sender) {
-      nameInput.focus();
+      focusNameInput();
       return;
     }
 
-    const wantsEphemeral = ephemeralArmed;
-    setEphemeralArmed(false);
     if (wantsEphemeral && files.some((f) => !f.type.startsWith('image/') && !f.type.startsWith('video/'))) {
       toast('Áudio e arquivos são enviados normalmente — visualização única vale só para foto/vídeo.');
     }
@@ -2481,6 +2562,20 @@
     } else {
       uploadProgress.classList.add('hidden');
     }
+  }
+
+  fileInput.addEventListener('change', () => {
+    const files = Array.from(fileInput.files || []);
+    fileInput.value = '';
+    uploadFiles(files, false);
+  });
+
+  cameraInput.addEventListener('change', () => {
+    const files = Array.from(cameraInput.files || []);
+    cameraInput.value = '';
+    const wantsEphemeral = pendingCameraEphemeral;
+    pendingCameraEphemeral = false;
+    uploadFiles(files, wantsEphemeral);
   });
 
   exportBtn.addEventListener('click', () => {

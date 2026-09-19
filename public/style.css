@@ -818,8 +818,7 @@ body::before {
 }
 
 .name-input {
-  width: 92px;
-  flex-shrink: 0;
+  width: 100%;
   border: 1px solid var(--border);
   background: var(--card-2);
   color: var(--ink);
@@ -860,16 +859,6 @@ body::before {
 .icon-btn:hover { background: var(--card); }
 .icon-btn:active { transform: scale(0.93); }
 .icon-btn:focus-visible { box-shadow: var(--ring); outline: none; }
-
-/* Ephemeral ("visualização única") toggle, armed state - the next photo/
-   video sent will expire, so the button itself needs to visibly say so
-   rather than being a silent mode switch. */
-#ephemeral-toggle-btn.is-armed {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #201510;
-}
-#ephemeral-toggle-btn.is-armed:hover { background: var(--accent); filter: brightness(1.08); }
 
 .text-input {
   flex: 1;
@@ -1259,6 +1248,27 @@ body::before {
 .msg-menu-item.is-danger { color: var(--danger); }
 .msg-menu-item.is-danger svg { color: var(--danger); }
 .msg-menu-item.is-danger:active { background: rgba(224,104,90,0.12); }
+
+/* Separa grupos dentro de um mesmo menu flutuante (câmera: "tirar foto/
+   vídeo" vs. "anexar da galeria"; +: nome vs. galeria/backup), sem
+   precisar de outra estrutura de menu só pra isso. */
+.msg-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 6px;
+}
+
+/* Campo de nome dentro do menu "+" - único item do menu que não é um
+   .msg-menu-item clicável, então ganha seu próprio espaçamento. */
+.msg-menu-name {
+  padding: 6px 14px 10px;
+}
+.msg-menu-name-label {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
 
 /* Barra de reação no topo do menu de contexto: 6 emojis fixos. */
 .msg-menu-reactions {
