@@ -1025,7 +1025,7 @@ body::before {
 .scroll-bottom-btn {
   position: absolute;
   right: calc(18px + env(safe-area-inset-right));
-  bottom: calc(88px + env(safe-area-inset-bottom));
+  bottom: calc(88px + env(safe-area-inset-bottom) + var(--reply-bar-h, 0px));
   z-index: 6;
   box-shadow: var(--shadow-2);
 }
@@ -1627,5 +1627,5 @@ body::before {
   /* The floating button's offset is tuned to clear the portrait composer's
      height - the landscape composer above is noticeably shorter, so match
      it here instead of leaving the button floating too high. */
-  .scroll-bottom-btn { bottom: calc(62px + env(safe-area-inset-bottom)); }
+  .scroll-bottom-btn { bottom: calc(62px + env(safe-area-inset-bottom) + var(--reply-bar-h, 0px)); }
 }

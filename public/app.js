@@ -177,11 +177,15 @@
     replyBarSender.style.color = nameColor(m.sender);
     replyBarSnippet.textContent = replyingTo.snippet;
     replyBar.classList.remove('hidden');
+    // scroll-bottom-btn's offset accounts for this so it floats above the
+    // reply bar instead of on top of it (see .scroll-bottom-btn in style.css).
+    document.documentElement.style.setProperty('--reply-bar-h', `${replyBar.offsetHeight}px`);
     textInput.focus();
   }
   function clearReplyingTo() {
     replyingTo = null;
     replyBar.classList.add('hidden');
+    document.documentElement.style.setProperty('--reply-bar-h', '0px');
   }
   replyBarCancel.addEventListener('click', clearReplyingTo);
 
