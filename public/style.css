@@ -647,7 +647,10 @@ body::before {
      from overflowing regardless. */
   max-width: var(--media-max-w, 260px);
   max-height: 320px;
-  border-radius: 12px;
+  /* No radius of its own - .bubble:has(.bubble-media-wrap) below clips it
+     to the BUBBLE's own radius instead, which varies (18px normally, 6px
+     on the last "tail" bubble of a group - see .msg-row.me/them .bubble).
+     Keeping a fixed radius here would drift out of sync with that. */
   display: block;
   cursor: pointer;
   transition: filter .1s ease;
@@ -665,6 +668,26 @@ body::before {
      just as indefinite. */
   max-width: var(--media-max-w, 260px);
   vertical-align: bottom;
+  /* Photos/videos sit flush against the bubble's edge (no visible padding
+     ring around them) like every other chat app - .bubble's own padding
+     (10px/14px) is meant for text. Negative margins bleed the wrap out
+     into that padding on every side it touches; updateMediaMaxWidth
+     (app.js) already computes --media-max-w assuming media doesn't have
+     that padding to fit inside, so there's no separate width fix needed
+     here. A reply-quote coming first (see buildBubbleContent) keeps its
+     own top inset via the rule below - only the quote needs the padding,
+     not the media under it. */
+  margin: -10px -14px;
+}
+.reply-quote + .bubble-media-wrap {
+  margin-top: 0;
+}
+/* Clips the media to the bubble's own (dynamic) corner radius instead of
+   giving .bubble img/video a fixed radius that could fall out of sync
+   with it - box-shadow/outline still escape overflow:hidden, so the
+   bubble's outer look elsewhere is untouched. */
+.bubble:has(.bubble-media-wrap) {
+  overflow: hidden;
 }
 
 .msg-time-overlay {

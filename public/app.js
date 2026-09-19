@@ -1299,6 +1299,19 @@
         // .css) - forcing explicit width/height there instead would squash
         // the image, see that rule's own comment.
         img.style.aspectRatio = `${m.width} / ${m.height}`;
+        // None of the above actually reserves space by itself: .bubble has
+        // no width of its own (it hugs its content), and a replaced element
+        // sized only via aspect-ratio contributes ~0 to that shrink-to-fit
+        // measurement until naturalWidth/naturalHeight are known - a real
+        // Chromium/WebKit gap, confirmed by instrumenting a real page load.
+        // The whole bubble collapses to just its padding for the window
+        // between "message rendered" and "enough bytes downloaded to read
+        // the image header", which is exactly the "loads tiny then pops to
+        // size" bug this is fixing. reserveMediaBox sets an explicit pixel
+        // width/height up front (same contain math the browser applies
+        // post-load) so the ancestor's fit-content pass always has a
+        // definite number to work with, load state or not.
+        reserveMediaBox(img, m.width, m.height);
       }
       img.addEventListener('click', () => openLightbox('image', img.src));
       wrap.appendChild(img);
@@ -1323,8 +1336,9 @@
       if (m.width && m.height) {
         vid.width = m.width;
         vid.height = m.height;
-        // See the matching comment in the image branch above.
+        // See the matching comments in the image branch above.
         vid.style.aspectRatio = `${m.width} / ${m.height}`;
+        reserveMediaBox(vid, m.width, m.height);
       }
       wrap.appendChild(vid);
       wrap.appendChild(makeTimeEl(m.ts, true));
@@ -2084,9 +2098,57 @@
     const padL = parseFloat(cs.paddingLeft) || 0;
     const padR = parseFloat(cs.paddingRight) || 0;
     const rowW = (messagesEl.clientWidth - padL - padR) * 0.78; // keep in sync with .msg-row's max-width:78%
-    const reserve = 28 + 34; // .bubble padding (14px*2) + avatar(26)+.msg-line gap(8) - shared conservatively for both sides
+    // Just avatar(26)+.msg-line gap(8), shared conservatively for both sides -
+    // NOT .bubble's own padding too: media bubbles render edge-to-edge now
+    // (see .bubble-media-wrap in style.css), so there's no padding of theirs
+    // left to reserve room for.
+    const reserve = 34;
     const maxW = Math.max(120, Math.floor(rowW - reserve));
     messagesEl.style.setProperty('--media-max-w', `${maxW}px`);
+    // reserveMediaBox's placeholder box (see its own comment) was computed
+    // against whatever --media-max-w was at render time - refresh it for
+    // anything still waiting on its real size, so a keyboard open/close
+    // mid-download doesn't leave the placeholder sized for the old
+    // viewport. Loaded media doesn't need this: it's already back to plain
+    // CSS sizing, which already tracks --media-max-w live on its own.
+    messagesEl.querySelectorAll('.bubble img, .bubble video').forEach((el) => {
+      const loaded = el.tagName === 'IMG' ? el.complete : el.readyState >= 1;
+      if (loaded) return;
+      const w = parseInt(el.getAttribute('width'), 10);
+      const h = parseInt(el.getAttribute('height'), 10);
+      if (w && h) reserveMediaBox(el, w, h);
+    });
+  }
+
+  const MEDIA_MAX_H = 320; // keep in sync with .bubble img/video's max-height in style.css
+
+  // See the call sites in buildBubbleContent for why this exists: .bubble
+  // has no width of its own (it hugs its content), and a replaced element
+  // sized only via CSS aspect-ratio contributes ~0 to that shrink-to-fit
+  // measurement until the browser actually knows the file's real
+  // dimensions - so without this, the whole bubble collapses to just its
+  // padding until the image/video has downloaded enough to report a
+  // natural size. Sets an explicit width/height up front, using the exact
+  // same contain-within-max-width/max-height math the browser itself
+  // applies once loaded (mirrors CSS2.1 10.4's replaced-element sizing:
+  // clamp to max-width first, then re-clamp to max-height from there),
+  // so there's never a mismatch to visibly snap into once it does.
+  // Released back to width:auto/height:auto (+ aspect-ratio, + the real
+  // natural size the browser now has) the moment the file actually loads,
+  // so live resizing via --media-max-w keeps working exactly as before
+  // this existed.
+  function reserveMediaBox(el, width, height) {
+    const cs = getComputedStyle(messagesEl);
+    const maxW = parseFloat(cs.getPropertyValue('--media-max-w')) || 260;
+    let w = width;
+    let h = height;
+    if (w > maxW) { h = h * (maxW / w); w = maxW; }
+    if (h > MEDIA_MAX_H) { w = w * (MEDIA_MAX_H / h); h = MEDIA_MAX_H; }
+    el.style.width = `${Math.round(w)}px`;
+    el.style.height = `${Math.round(h)}px`;
+    const release = () => { el.style.width = ''; el.style.height = ''; };
+    el.addEventListener(el.tagName === 'VIDEO' ? 'loadedmetadata' : 'load', release, { once: true });
+    el.addEventListener('error', release, { once: true });
   }
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', syncViewportHeight);
