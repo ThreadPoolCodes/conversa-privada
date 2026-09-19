@@ -486,11 +486,25 @@ body::before {
      this is just enough to lift a bubble off the page background, not a
      drop shadow anyone should consciously notice. */
   box-shadow: 0 0.5px 0 rgba(0,0,0,0.14);
-  /* O texto do balão precisa continuar selecionável (seleção normal do
-     navegador), então só o callout nativo do iOS fica desligado aqui - o
-     menu de toque longo (Responder/Copiar/Apagar) é aberto via pointerdown
-     em attachMenuGestures, que não depende de user-select pra funcionar. */
+  /* O texto do balão precisa continuar selecionável no mouse (seleção normal
+     do navegador em desktop), então só o callout nativo do iOS fica
+     desligado aqui - o menu de toque longo (Responder/Copiar/Apagar) é
+     aberto via pointerdown em attachMenuGestures, que não depende de
+     user-select pra funcionar. */
   -webkit-touch-callout: none;
+}
+/* Em telas de toque, porém, deixar o texto selecionável competia com o
+   próprio toque longo: navegador via iniciar a seleção nativa (às vezes se
+   espalhando pela tela toda com um leve arrasto do dedo) bem no meio da
+   janela de detecção do nosso timer, disputando o mesmo gesto. Como o menu
+   de toque longo já tem "Copiar", a seleção nativa por arrasto não faz falta
+   aqui - só desliga pra ponteiro grosso (touch), o mouse continua como
+   estava. */
+@media (pointer: coarse) {
+  .bubble {
+    -webkit-user-select: none;
+    user-select: none;
+  }
 }
 .msg-row.me .bubble {
   background: var(--bubble-me);
@@ -1241,6 +1255,15 @@ body::before {
   inset: 0;
   z-index: 55;
   background: transparent;
+  /* Cobre a tela toda por cima de tudo enquanto o menu está aberto (é ele
+     quem recebe o clique que fecha o menu). Sem isso, um mousedown aqui -
+     mesmo sem nenhum texto próprio - ainda conseguia iniciar um arrasto de
+     seleção nativa; o navegador então "resolvia" o ponto pro nó de texto
+     selecionável mais próximo no DOM em vez de desistir, varrendo a
+     conversa inteira por baixo. user-select:none barra o arrasto de
+     seleção já na origem. */
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* Cartãozinho flutuante, mesma linguagem do .confirm-card: superfície

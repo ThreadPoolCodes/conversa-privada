@@ -466,17 +466,43 @@
     closeMessageMenu();
     if (m) setReplyingTo(m);
   });
+  // navigator.clipboard só existe em contexto seguro (https, ou http em
+  // localhost) - testando pelo IP da rede local (npm run start:lan) a
+  // página é http "de verdade" pro browser, então a API some e cai sempre
+  // no fallback abaixo. document.execCommand('copy') é obsoleto mas
+  // funciona em http comum: seleciona o texto de um textarea fora da tela
+  // e pede pro navegador copiar a seleção atual.
+  function legacyCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.left = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length); // iOS ignora .select() sozinho
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch (_) { /* segue pro toast de falha */ }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
   msgMenuCopyBtn.addEventListener('click', () => {
     const m = loadedMessages.find((x) => x.id === activeMenuMsgId);
     closeMessageMenu();
     if (!m || !m.text) return;
-    if (!navigator.clipboard || !navigator.clipboard.writeText) {
-      toast('Cópia não suportada neste navegador.');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(m.text)
+        .then(() => toast('Mensagem copiada.'))
+        .catch(() => {
+          toast(legacyCopy(m.text) ? 'Mensagem copiada.' : 'Não foi possível copiar.');
+        });
       return;
     }
-    navigator.clipboard.writeText(m.text)
-      .then(() => toast('Mensagem copiada.'))
-      .catch(() => toast('Não foi possível copiar.'));
+    toast(legacyCopy(m.text) ? 'Mensagem copiada.' : 'Cópia não suportada neste navegador.');
   });
   msgMenuDelBtn.addEventListener('click', () => {
     const id = activeMenuMsgId;
