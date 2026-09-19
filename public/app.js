@@ -24,6 +24,12 @@
   // down, once #messages and isNearBottom() exist (see "keyboard-aware
   // scroll" below) - it needs to read the OLD layout before setAppHeight
   // touches it, so it owns the setAppHeight() call for that listener too.
+  // updateMediaMaxWidth (defined further down, near syncViewportHeight) is
+  // also re-run from there on a visualViewport resize; this plain listener
+  // is just the fallback for whenever that doesn't fire (unlike setAppHeight
+  // above, kept unconditional since a plain window resize on desktop isn't
+  // guaranteed to also fire visualViewport's).
+  window.addEventListener('resize', updateMediaMaxWidth);
 
   const roomPath = location.pathname.replace(/\/$/, ''); // e.g. /c/<slug>
   const api = (p) => `${roomPath}${p}`;
@@ -1214,6 +1220,15 @@
       if (m.width && m.height) {
         img.width = m.width;
         img.height = m.height;
+        // Belt-and-suspenders alongside the width/height attributes above:
+        // an explicit aspect-ratio doesn't depend on the browser's own
+        // attribute->aspect-ratio UA-stylesheet mapping, which is a newer,
+        // lower-priority mechanism that's more prone to timing differences
+        // between an early layout pass and the one after the file decodes.
+        // Must stay paired with width:auto;height:auto in .bubble img (style
+        // .css) - forcing explicit width/height there instead would squash
+        // the image, see that rule's own comment.
+        img.style.aspectRatio = `${m.width} / ${m.height}`;
       }
       img.addEventListener('click', () => openLightbox('image', img.src));
       wrap.appendChild(img);
@@ -1238,6 +1253,8 @@
       if (m.width && m.height) {
         vid.width = m.width;
         vid.height = m.height;
+        // See the matching comment in the image branch above.
+        vid.style.aspectRatio = `${m.width} / ${m.height}`;
       }
       wrap.appendChild(vid);
       wrap.appendChild(makeTimeEl(m.ts, true));
@@ -1979,10 +1996,27 @@
   function syncViewportHeight() {
     const stickToBottom = isNearBottom();
     setAppHeight();
+    updateMediaMaxWidth();
     requestAnimationFrame(() => {
       if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
       if (stickToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
     });
+  }
+
+  // Percentage max-width on .bubble img/.bubble-media-wrap can't resolve
+  // reliably (the ancestor chain down to .msg-body never has a definite
+  // width of its own - see the comment above .bubble img in style.css).
+  // Mirror .msg-row's own 78% cap (style.css ~line 386) as an absolute px
+  // value instead, kept live via --media-max-w so every bubble picks it up
+  // automatically, including ones already rendered.
+  function updateMediaMaxWidth() {
+    const cs = getComputedStyle(messagesEl);
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const padR = parseFloat(cs.paddingRight) || 0;
+    const rowW = (messagesEl.clientWidth - padL - padR) * 0.78; // keep in sync with .msg-row's max-width:78%
+    const reserve = 28 + 34; // .bubble padding (14px*2) + avatar(26)+.msg-line gap(8) - shared conservatively for both sides
+    const maxW = Math.max(120, Math.floor(rowW - reserve));
+    messagesEl.style.setProperty('--media-max-w', `${maxW}px`);
   }
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', syncViewportHeight);
@@ -2050,15 +2084,56 @@
     const newAnchor = anchorId
       ? messagesEl.querySelector(`.msg-row[data-id="${anchorId}"]`)
       : null;
-    if (newAnchor) {
-      // Assinala o scroll em absoluto (zera → mede a âncora nessa base → posiciona)
-      // em vez de "+=", pra não depender de onde o navegador deixou o scrollTop
-      // depois do teardown/re-render nem do scroll-anchoring dele.
+    // Assinala o scroll em absoluto (zera → mede a âncora nessa base → posiciona)
+    // em vez de "+=", pra não depender de onde o navegador deixou o scrollTop
+    // depois do teardown/re-render nem do scroll-anchoring dele.
+    const reanchor = () => {
+      if (!newAnchor) return;
       messagesEl.scrollTop = 0;
       messagesEl.scrollTop = newAnchor.getBoundingClientRect().top - anchorTop;
-    }
+    };
+    reanchor();
     updateScrollBtn();
     updateEmptyState();
+    if (!newAnchor) return;
+
+    // Every row just got recreated, so all their media elements are fresh
+    // <img>/<video> nodes that haven't loaded/decoded yet - anything the
+    // reanchor() above just lined up against can still reflow as each one
+    // settles (most visibly for legacy messages with no stored width/height
+    // to reserve space with). Same load/error + rAF-batched-correction
+    // pattern as scrollToBottomWhenReady's queueScrollCorrection, but
+    // re-running THIS anchor correction instead of scrolling to bottom -
+    // and cancelled the moment the person actually scrolls/touches/types,
+    // so it never fights someone reading.
+    let cancelled = false;
+    const cancel = () => {
+      cancelled = true;
+      messagesEl.removeEventListener('wheel', cancel);
+      messagesEl.removeEventListener('touchstart', cancel);
+      messagesEl.removeEventListener('keydown', cancel);
+    };
+    messagesEl.addEventListener('wheel', cancel, { once: true, passive: true });
+    messagesEl.addEventListener('touchstart', cancel, { once: true, passive: true });
+    messagesEl.addEventListener('keydown', cancel, { once: true });
+
+    let correctionQueued = false;
+    function queueReanchor() {
+      if (cancelled || correctionQueued) return;
+      correctionQueued = true;
+      requestAnimationFrame(() => {
+        correctionQueued = false;
+        if (!cancelled) reanchor();
+      });
+    }
+    messagesEl.querySelectorAll('img, video, audio').forEach((el) => {
+      const ready = el.tagName === 'IMG' ? el.complete : el.readyState >= 1;
+      if (ready) return;
+      const evt = el.tagName === 'IMG' ? 'load' : 'loadedmetadata';
+      el.addEventListener(evt, queueReanchor, { once: true });
+      el.addEventListener('error', queueReanchor, { once: true });
+    });
+    setTimeout(cancel, 800); // matches scrollToBottomWhenReady's own settle window
   }
 
   // Busca o lote imediatamente anterior ao que já está carregado e redesenha a
@@ -2242,6 +2317,9 @@
     // a tela ainda escondida) mediu scrollHeight 0 e deixou o textarea com
     // height:0px preso no inline style. Recalcula agora que o layout é real.
     autoResizeTextInput();
+    // Same reasoning: #messages has no real clientWidth until the screen is
+    // actually visible, so this can only run now, before the first render.
+    updateMediaMaxWidth();
     await loadMessages();
     connectStream();
     textInput.focus();

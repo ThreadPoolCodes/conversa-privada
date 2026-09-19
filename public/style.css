@@ -608,7 +608,17 @@ body::before {
      both width (max-width) and height (max-height) at once. */
   width: auto;
   height: auto;
-  max-width: 100%;
+  /* NOT max-width:100% - .bubble-media-wrap/.bubble/.msg-body never have a
+     definite width of their own (.msg-body is a flex column with
+     align-items:flex-end/flex-start, not stretch), so a percentage here has
+     no definite containing-block width to resolve against and can size
+     differently pre-load vs. after the real file decodes - the exact cause
+     of bubbles visibly growing once an image finishes loading. --media-max-w
+     (set by updateMediaMaxWidth in app.js, mirroring .msg-row's max-width:
+     78% at line ~386) is an absolute px value instead, which has no such
+     ambiguity; .msg-row's own resolved cap still keeps everything below it
+     from overflowing regardless. */
+  max-width: var(--media-max-w, 260px);
   max-height: 320px;
   border-radius: 12px;
   display: block;
@@ -624,7 +634,9 @@ body::before {
 .bubble-media-wrap {
   position: relative;
   display: inline-block;
-  max-width: 100%;
+  /* Same reasoning as .bubble img's max-width above - a percentage here is
+     just as indefinite. */
+  max-width: var(--media-max-w, 260px);
   vertical-align: bottom;
 }
 
