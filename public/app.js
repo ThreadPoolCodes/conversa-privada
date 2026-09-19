@@ -90,9 +90,13 @@
   const toastEl = document.getElementById('toast');
   const presenceDotEl = document.querySelector('.chat-header .dot');
   const replyBar = document.getElementById('reply-bar');
+  const replyBarThumb = document.getElementById('reply-bar-thumb');
   const replyBarSender = document.getElementById('reply-bar-sender');
   const replyBarSnippet = document.getElementById('reply-bar-snippet');
   const replyBarCancel = document.getElementById('reply-bar-cancel');
+  // Se a miniatura falhar ao carregar (ex: mídia original apagada), some
+  // sem mais - mesma tolerância a falha do preview de link.
+  replyBarThumb.addEventListener('error', () => replyBarThumb.classList.add('hidden'));
   const scrollBottomBtn = document.getElementById('scroll-bottom-btn');
   const msgMenu = document.getElementById('msg-menu');
   const msgMenuBackdrop = document.getElementById('msg-menu-backdrop');
@@ -170,20 +174,41 @@
   }
 
   let replyingTo = null;
+  // Mesma regra do buildMediaTile (aba Mídia): prefere thumbId, cai pro
+  // mediaId só pra foto (nunca vídeo - um <img> num .mp4 cru baixa o
+  // arquivo inteiro e não decodifica nada), e nunca pra ephemeral (que já
+  // chega sem thumbId/mediaId, sanitizado pelo servidor).
+  function replyThumbId(m) {
+    if (m.ephemeral) return undefined;
+    if (m.type === 'image') return m.thumbId || m.mediaId;
+    if (m.type === 'video') return m.thumbId;
+    return undefined;
+  }
   function setReplyingTo(m) {
     replyingTo = { id: m.id, sender: m.sender, snippet: snippetFor(m) };
     replyBarSender.textContent = m.sender;
     replyBarSender.style.color = nameColor(m.sender);
     replyBarSnippet.textContent = replyingTo.snippet;
+    const thumbId = replyThumbId(m);
+    if (thumbId) {
+      replyBarThumb.src = api(`/api/media/${thumbId}`);
+      replyBarThumb.classList.remove('hidden');
+    } else {
+      replyBarThumb.classList.add('hidden');
+      replyBarThumb.removeAttribute('src');
+    }
     replyBar.classList.remove('hidden');
     // scroll-bottom-btn's offset accounts for this so it floats above the
     // reply bar instead of on top of it (see .scroll-bottom-btn in style.css).
+    // O thumb tem tamanho fixo no CSS, então isso é seguro antes dele carregar.
     document.documentElement.style.setProperty('--reply-bar-h', `${replyBar.offsetHeight}px`);
     textInput.focus();
   }
   function clearReplyingTo() {
     replyingTo = null;
     replyBar.classList.add('hidden');
+    replyBarThumb.classList.add('hidden');
+    replyBarThumb.removeAttribute('src');
     document.documentElement.style.setProperty('--reply-bar-h', '0px');
   }
   replyBarCancel.addEventListener('click', clearReplyingTo);
@@ -1540,6 +1565,23 @@
         const quote = document.createElement('div');
         quote.className = 'reply-quote';
         quote.style.borderColor = nameColor(m.replyTo.sender);
+        if (m.replyTo.thumbId) {
+          const qThumb = document.createElement('img');
+          qThumb.className = 'reply-quote-thumb';
+          qThumb.alt = '';
+          // Diferente do IntersectionObserver da aba Mídia: aqui toda
+          // mensagem carregada renderiza a citação de cara, então o
+          // loading="lazy" nativo evita uma rajada de /api/media num
+          // histórico longo (jumpToMessage, rerenderLoadedMessages).
+          qThumb.loading = 'lazy';
+          qThumb.src = api(`/api/media/${m.replyTo.thumbId}`);
+          // Mídia original apagada depois da resposta -> 404 silencioso,
+          // só some a miniatura.
+          qThumb.addEventListener('error', () => qThumb.remove());
+          quote.appendChild(qThumb);
+        }
+        const qText = document.createElement('div');
+        qText.className = 'reply-quote-text';
         const qSender = document.createElement('div');
         qSender.className = 'reply-quote-sender';
         qSender.style.color = nameColor(m.replyTo.sender);
@@ -1547,8 +1589,9 @@
         const qSnippet = document.createElement('div');
         qSnippet.className = 'reply-quote-snippet';
         qSnippet.textContent = m.replyTo.snippet;
-        quote.appendChild(qSender);
-        quote.appendChild(qSnippet);
+        qText.appendChild(qSender);
+        qText.appendChild(qSnippet);
+        quote.appendChild(qText);
         // jumpToMessage e não scrollToMessage: antes, clicar numa citação de
         // mensagem fora do lote carregado só dava o toast de "nao esta mais
         // visivel". Com o ?from= no lugar, o salto funciona de verdade.

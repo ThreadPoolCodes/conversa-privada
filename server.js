@@ -419,6 +419,7 @@ function buildReplySnapshot(data, replyToId) {
   const original = data.messages.find((m) => m.id === String(replyToId));
   if (!original) return undefined;
   let snippet;
+  let thumbId;
   if (original.expiredEphemeral) {
     snippet = 'Mídia de visualização única (expirada)';
   } else if (original.deleted) {
@@ -433,8 +434,16 @@ function buildReplySnapshot(data, replyToId) {
     snippet = original.text.length > 140 ? `${original.text.slice(0, 140)}...` : original.text;
   } else {
     snippet = REPLY_SNIPPET_LABELS[original.type] || 'Arquivo';
+    // thumbId (ou o mediaId, só pra foto: um <img> num .mp4 cru baixaria o
+    // arquivo inteiro e não decodificaria nada) - só é seguro pegar aqui,
+    // no branch que já garante que o original não é ephemeral nem deletado.
+    if (original.type === 'image' || original.type === 'video') {
+      thumbId = original.thumbId || (original.type === 'image' ? original.mediaId : undefined);
+    }
   }
-  return { id: original.id, sender: original.sender, snippet };
+  const result = { id: original.id, sender: original.sender, snippet };
+  if (thumbId) result.thumbId = thumbId;
+  return result;
 }
 
 // Paginação "mais recentes primeiro": sem parâmetros, devolve só o último
