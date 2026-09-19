@@ -228,12 +228,10 @@
 </div>
 
 <!-- Menu do botão de câmera: único ponto de entrada pra enviar mídia -
-     tirar foto/vídeo agora (normal ou visualização única) ou anexar da
-     galeria. Anexo da galeria não tem opção "visualização única": ela
-     supõe uma foto/vídeo recém-tirado, não algo que a pessoa já tinha
-     salvo. Reaproveita o mesmo visual do #msg-menu (classes .msg-menu /
-     .msg-menu-item), mas é um menu independente - não tem relação com
-     mensagens ou a aba Mídia. -->
+     tirar foto/vídeo agora ou anexar da galeria, cada um com uma opção
+     "visualização única" logo abaixo. Reaproveita o mesmo visual do
+     #msg-menu (classes .msg-menu / .msg-menu-item), mas é um menu
+     independente - não tem relação com mensagens ou a aba Mídia. -->
 <div id="camera-menu-backdrop" class="msg-menu-backdrop hidden"></div>
 <div id="camera-menu" class="msg-menu hidden" role="menu" aria-label="Enviar foto, vídeo ou arquivo">
   <button type="button" id="camera-menu-normal" class="msg-menu-item" role="menuitem">
@@ -248,6 +246,10 @@
   <button type="button" id="camera-menu-attach" class="msg-menu-item" role="menuitem">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 8.5 9.9 16a3 3 0 1 1-4.2-4.2l8.5-8.5a2 2 0 1 1 2.8 2.8L8.7 14.4a1 1 0 1 1-1.4-1.4l6.6-6.6"/></svg>
     <span>Anexar da galeria</span>
+  </button>
+  <button type="button" id="camera-menu-attach-ephemeral" class="msg-menu-item" role="menuitem">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+    <span>Anexar da galeria — visualização única</span>
   </button>
 </div>
 

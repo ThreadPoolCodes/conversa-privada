@@ -60,6 +60,7 @@
   const hapticSwitch = document.getElementById('haptic-switch');
   const cameraMenuEphemeralBtn = document.getElementById('camera-menu-ephemeral');
   const cameraMenuAttachBtn = document.getElementById('camera-menu-attach');
+  const cameraMenuAttachEphemeralBtn = document.getElementById('camera-menu-attach-ephemeral');
   const exportBtn = document.getElementById('export-btn');
   const clearBtn = document.getElementById('clear-btn');
   const logoutBtn = document.getElementById('logout-btn');
@@ -2572,8 +2573,10 @@
   // A opção do menu de câmera decide sozinha, no momento do clique, se
   // aquela foto/vídeo é visualização única - não é um estado que fica
   // ligado/desligado por aí, então não tem como "esquecer armado" de um
-  // envio pro próximo.
+  // envio pro próximo. Mesma ideia pro anexo da galeria, com sua própria
+  // flag (fileInput e cameraInput são inputs diferentes).
   let pendingCameraEphemeral = false;
+  let pendingAttachEphemeral = false;
 
   cameraMenuNormalBtn.addEventListener('click', () => {
     cameraMenuCtl.close();
@@ -2587,6 +2590,12 @@
   });
   cameraMenuAttachBtn.addEventListener('click', () => {
     cameraMenuCtl.close();
+    pendingAttachEphemeral = false;
+    fileInput.click();
+  });
+  cameraMenuAttachEphemeralBtn.addEventListener('click', () => {
+    cameraMenuCtl.close();
+    pendingAttachEphemeral = true;
     fileInput.click();
   });
 
@@ -2792,7 +2801,9 @@
   fileInput.addEventListener('change', () => {
     const files = Array.from(fileInput.files || []);
     fileInput.value = '';
-    uploadFiles(files, false);
+    const wantsEphemeral = pendingAttachEphemeral;
+    pendingAttachEphemeral = false;
+    uploadFiles(files, wantsEphemeral);
   });
 
   cameraInput.addEventListener('change', () => {
