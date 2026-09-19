@@ -895,13 +895,17 @@ body::before {
   border: none;
   background: transparent;
   color: var(--ink);
-  padding: 11px 16px;
+  padding: 8px 16px;
   font-size: 16px; /* iOS Safari zooms the whole page on focus below 16px */
   line-height: 1.4;
   outline: none;
   -webkit-appearance: none;
   appearance: none;
   resize: none;
+  /* 1 linha fica do mesmo tamanho dos botões redondos ao lado (o wrap soma
+     2px de borda); min-height é o piso mesmo se o auto-resize errar por um
+     instante (ex.: recalculado com a tela ainda escondida). */
+  min-height: 38px;
   max-height: 160px; /* ~6 lines; beyond that it scrolls internally */
   overflow-y: auto;
   font-family: inherit;

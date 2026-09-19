@@ -2229,6 +2229,11 @@
     loginScreen.classList.add('hidden');
     nameScreen.classList.add('hidden');
     chatScreen.classList.remove('hidden');
+    // #chat-screen is display:none até aqui, então a chamada de
+    // syncTextInputUI() lá embaixo (que roda no carregamento do script, com
+    // a tela ainda escondida) mediu scrollHeight 0 e deixou o textarea com
+    // height:0px preso no inline style. Recalcula agora que o layout é real.
+    autoResizeTextInput();
     await loadMessages();
     connectStream();
     textInput.focus();
