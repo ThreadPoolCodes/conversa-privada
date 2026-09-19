@@ -4,6 +4,7 @@ require('./lib/env')();
 
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const crypto = require('crypto');
 const express = require('express');
 const multer = require('multer');
@@ -15,6 +16,10 @@ const auth = require('./lib/auth');
 const { randomId } = require('./lib/crypto');
 
 const PORT = parseInt(process.env.PORT || '4177', 10);
+// Default fica em 127.0.0.1 (só a própria máquina). Setar HOST=0.0.0.0 expõe
+// na rede local também — útil pra testar do celular pelo Wi-Fi, mas assume o
+// mesmo risco de qualquer app na LAN sem esse limite.
+const HOST = process.env.HOST || '127.0.0.1';
 const ROOM_SLUG = process.env.ROOM_SLUG;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_MB || '300', 10);
@@ -980,6 +985,20 @@ roomRouter.get('/api/export', requireAuth, (req, res) => {
 
 app.use((req, res) => res.status(404).end());
 
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`Chat privado rodando em http://127.0.0.1:${PORT}${ROOM_PATH}`);
+function lanAddress() {
+  const nets = os.networkInterfaces();
+  for (const addrs of Object.values(nets)) {
+    for (const addr of addrs) {
+      if (addr.family === 'IPv4' && !addr.internal) return addr.address;
+    }
+  }
+  return null;
+}
+
+app.listen(PORT, HOST, () => {
+  console.log(`Chat privado rodando em http://${HOST}:${PORT}${ROOM_PATH}`);
+  if (HOST === '0.0.0.0') {
+    const lan = lanAddress();
+    if (lan) console.log(`Na rede local: http://${lan}:${PORT}${ROOM_PATH}`);
+  }
 });
