@@ -2342,13 +2342,16 @@
       // Only auto-follow to the new message if the person was already at
       // (or very near) the bottom — otherwise this would yank them away
       // from older messages they're in the middle of reading. They still
-      // get the floating button to jump down whenever they want.
+      // get the floating button to jump down whenever they want. A message
+      // this person just sent themselves is the exception: sending is a
+      // deliberate action, so always follow it down regardless of where
+      // they were scrolled.
       const wasNearBottom = isNearBottom();
       const m = JSON.parse(evt.data);
       loadedMessages.push(m);
       renderMessage(m, { animate: true });
       addMediaItemToTop(m);
-      if (wasNearBottom) {
+      if (wasNearBottom || sameName(m.sender, myName())) {
         scrollToBottomWhenReady();
       } else {
         updateScrollBtn();
