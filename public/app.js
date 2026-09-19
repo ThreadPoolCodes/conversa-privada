@@ -2271,18 +2271,18 @@
     if (!text) return;
     if (isLoveTrigger(text)) {
       textInput.value = '';
-      updateSendBtnState();
+      syncTextInputUI();
       showLoveCounter();
       return;
     }
     if (isKonamiEmojiTrigger(text)) {
       textInput.value = '';
-      updateSendBtnState();
+      syncTextInputUI();
       showKonamiHeart();
       return;
     }
     textInput.value = '';
-    updateSendBtnState();
+    syncTextInputUI();
     const replyToId = replyingTo ? replyingTo.id : undefined;
     clearReplyingTo();
     try {
@@ -2293,16 +2293,36 @@
       });
     } catch (err) {
       textInput.value = text;
-      updateSendBtnState();
+      syncTextInputUI();
     }
+  });
+
+  // Enter envia no desktop (mouse/trackpad); Shift+Enter quebra linha. No
+  // toque não há gesto prático pra Shift+Enter, entao Enter sempre quebra
+  // linha e o envio fica só pelo botão. isComposing/keyCode 229 evita
+  // enviar no meio da composição de um IME (ex.: candidatos de japonês).
+  const isTouchPrimary = window.matchMedia('(pointer: coarse)').matches;
+  textInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229) return;
+    if (isTouchPrimary || e.shiftKey) return;
+    e.preventDefault();
+    composer.requestSubmit();
   });
 
   const sendBtn = composer.querySelector('.send-btn');
   function updateSendBtnState() {
     sendBtn.classList.toggle('is-empty', !textInput.value.trim());
   }
-  textInput.addEventListener('input', updateSendBtnState);
-  updateSendBtnState();
+  function autoResizeTextInput() {
+    textInput.style.height = 'auto';
+    textInput.style.height = `${textInput.scrollHeight}px`;
+  }
+  function syncTextInputUI() {
+    updateSendBtnState();
+    autoResizeTextInput();
+  }
+  textInput.addEventListener('input', syncTextInputUI);
+  syncTextInputUI();
 
   // Miolo comum aos dois menus flutuantes do composer (câmera e "+"):
   // posiciona acima do botão que abriu, travado nas bordas da viewport
