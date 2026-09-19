@@ -752,12 +752,11 @@ body::before {
 /* .reply-quote fica dentro de .bubble, e ".bubble img" (mais abaixo) tem
    mais especificidade que uma classe sozinha (class+elemento > 1 classe) -
    sem esse escopo extra, width/height:auto de lá vence e a miniatura
-   nasce do tamanho do cap de mídia da bolha (260x320), não 28x28. */
+   nasce do tamanho do cap de mídia da bolha (260x320), não 36x36. */
 .reply-quote .reply-quote-thumb {
-  /* Mesmo tamanho do .reply-bar-thumb - a miniatura da citação não pode
-     ficar maior que a do balão de composição que a originou. */
-  width: 28px;
-  height: 28px;
+  /* Mesmo tamanho do .reply-bar-thumb. */
+  width: 36px;
+  height: 36px;
   border-radius: 6px;
   object-fit: cover;
   flex-shrink: 0;
@@ -853,11 +852,8 @@ body::before {
 }
 
 .reply-bar-thumb {
-  /* 28px = a altura natural da coluna sender+snippet (medida: 45px de
-     .reply-bar sem thumb, 8+8 de padding, sobra 28px pro conteúdo) - a
-     barra não pode crescer só porque a resposta é de mídia. */
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   border-radius: 6px;
   object-fit: cover;
   flex-shrink: 0;
