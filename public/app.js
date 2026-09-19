@@ -57,7 +57,6 @@
   const cameraMenu = document.getElementById('camera-menu');
   const cameraMenuBackdrop = document.getElementById('camera-menu-backdrop');
   const cameraMenuNormalBtn = document.getElementById('camera-menu-normal');
-  const hapticSwitch = document.getElementById('haptic-switch');
   const cameraMenuEphemeralBtn = document.getElementById('camera-menu-ephemeral');
   const cameraMenuAttachBtn = document.getElementById('camera-menu-attach');
   const cameraMenuAttachEphemeralBtn = document.getElementById('camera-menu-attach-ephemeral');
@@ -574,22 +573,11 @@
   // `resolve(e)` devolve { el, id } pro alvo sob o evento, ou null se aquele
   // ponto não é um alvo válido. `open(id, at)` abre o menu do modo certo.
   // Safari no iOS nunca implementou a Vibration API, então navigator.vibrate
-  // não faz nada lá. O <input type="checkbox" switch> (Safari 17.4+) é
-  // renderizado pelo controle nativo de switch do iOS, e alterná-lo - mesmo
-  // escondido, mesmo via .click() - dispara o haptic real do sistema. Não é
-  // API documentada, é efeito colateral de um controle nativo de verdade;
-  // por isso o #haptic-switch fica em layout (não display:none) só invisível.
-  // Os dois mecanismos são isolados um do outro (try/catch cada um): o switch
-  // é um hack sobre comportamento não documentado, então uma falha nele nunca
-  // pode derrubar o vibrate (que já funciona de verdade onde existe) nem o
-  // callback que chama triggerHaptic() - o menu tem que abrir de qualquer jeito.
+  // não faz nada lá - sem feedback tátil nesse caso.
   function triggerHaptic() {
     try {
       if (navigator.vibrate) navigator.vibrate(8);
     } catch (_) { /* ignora - vibrate pode ser bloqueado por permissions policy */ }
-    try {
-      if (hapticSwitch) hapticSwitch.click();
-    } catch (_) { /* ignora - hack sobre comportamento não documentado */ }
   }
 
   function attachMenuGestures(rootEl, scrollEl, resolve, open) {
