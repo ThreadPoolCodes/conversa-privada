@@ -1557,10 +1557,6 @@ body::before {
   100% { transform: scale(1); opacity: 1; }
 }
 
-@media (max-width: 480px) {
-  .name-input { width: 72px; }
-}
-
 /* Landscape on a phone: the visual viewport gets very short (worse once
    the keyboard is also up), so trim the breathing room that's fine in
    portrait but eats into message space here. */
