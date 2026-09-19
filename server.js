@@ -75,6 +75,13 @@ const URL_IN_TEXT_RE = /(https?:\/\/[^\s<>"']+)/i;
 // less for correctness (the client-rendered href already excludes this)
 // than for making sure the preview is actually fetched for the same link
 // the person sees rendered as clickable.
+// A pessoa é identificada pelo nome digitado, que ela pode capitalizar de
+// forma diferente entre sessões/dispositivos ("Ana" num, "ana" noutro) - a
+// identidade tem que reconhecer isso como a mesma pessoa.
+function sameSender(a, b) {
+  return !!a && !!b && String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+}
+
 function stripTrailingPunctuationServer(raw) {
   while (raw.length) {
     const last = raw[raw.length - 1];
@@ -622,7 +629,7 @@ roomRouter.post('/api/messages/:id/view', requireAuth, express.json(), (req, res
     if (msg.deleted) {
       return res.status(410).json({ error: 'expired', message: 'Essa mídia já expirou.' });
     }
-    if (msg.sender === String(requesterName).trim()) {
+    if (sameSender(msg.sender, requesterName)) {
       return res.status(403).json({ error: 'forbidden', message: 'Quem enviou não pode abrir uma mídia de visualização única.' });
     }
     if (!msg.viewedAt) {
@@ -699,7 +706,7 @@ roomRouter.post('/api/messages/:id/react', requireAuth, express.json(), (req, re
 
     const name = String(requesterName).trim();
     if (!Array.isArray(msg.reactions)) msg.reactions = [];
-    const i = msg.reactions.findIndex((r) => r.sender === name);
+    const i = msg.reactions.findIndex((r) => sameSender(r.sender, name));
     if (i >= 0 && msg.reactions[i].emoji === emoji) {
       msg.reactions.splice(i, 1);
     } else if (i >= 0) {

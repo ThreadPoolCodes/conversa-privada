@@ -271,7 +271,7 @@
   // login), not on every dropped/retried connection.
   let announcedPresenceOnEntry = false;
   function otherPeopleOnline(online) {
-    return (online || []).filter((n) => n && n !== myName());
+    return (online || []).filter((n) => n && !sameName(n, myName()));
   }
   function updatePresenceIndicator(online) {
     if (!presenceDotEl) return;
@@ -355,7 +355,7 @@
     // Barra de reação: destaca o emoji com que EU já reagi (se reagi). Fica
     // visível pra qualquer mensagem não apagada - openMessageMenu já saiu
     // acima em m.deleted.
-    const myReaction = (m.reactions || []).find((r) => r.sender === myName());
+    const myReaction = (m.reactions || []).find((r) => sameName(r.sender, myName()));
     reactionPicks.forEach((b) => {
       b.classList.toggle('is-mine', !!myReaction && b.dataset.emoji === myReaction.emoji);
     });
@@ -912,6 +912,13 @@
     return (nameInput.value || '').trim();
   }
 
+  // A pessoa pode digitar o nome com capitalização diferente entre
+  // sessões/dispositivos ("Ana" num, "ana" noutro) - a comparação de
+  // identidade precisa ignorar isso.
+  function sameName(a, b) {
+    return !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+  }
+
   async function handleDeleteClick(id) {
     if (!myName()) {
       focusNameInput();
@@ -1138,7 +1145,7 @@
       }
       const agg = byEmoji.get(r.emoji);
       agg.count += 1;
-      if (r.sender === myName()) agg.mine = true;
+      if (sameName(r.sender, myName())) agg.mine = true;
     }
     for (const emoji of order) {
       const agg = byEmoji.get(emoji);
@@ -1365,16 +1372,17 @@
     const color = nameColor(m.sender);
     // Lado da bolha = quem está olhando a tela, como em qualquer mensageiro:
     // o que EU mandei vai pra direita, o resto pra esquerda. A identidade é o
-    // nome de exibição comparado exatamente (trim), o mesmo critério que o
-    // servidor usa pra "visualização única" (server.js) e que a presença usa
-    // em otherPeopleOnline - uma noção só de identidade no app inteiro.
-    // Por isso myName() não pode estar vazio: showChat() exige o nome antes de
-    // renderizar qualquer mensagem, e renomear re-renderiza a lista.
-    const mine = m.sender === myName();
+    // nome de exibição comparado sem diferenciar maiúsculas/minúsculas
+    // (sameName), o mesmo critério que o servidor usa pra "visualização
+    // única" (server.js) e que a presença usa em otherPeopleOnline - uma
+    // noção só de identidade no app inteiro. Por isso myName() não pode
+    // estar vazio: showChat() exige o nome antes de renderizar qualquer
+    // mensagem, e renomear re-renderiza a lista.
+    const mine = sameName(m.sender, myName());
     // Same author as the message right before this one, sent within the
     // grouping window → render as part of the same visual group instead of
     // a brand-new block.
-    const grouped = lastSender === m.sender && lastTs !== null && (m.ts - lastTs) < GROUP_GAP_MS;
+    const grouped = sameName(lastSender, m.sender) && lastTs !== null && (m.ts - lastTs) < GROUP_GAP_MS;
 
     const row = document.createElement('div');
     row.className = `msg-row ${mine ? 'me' : 'them'}${grouped ? ' grouped' : ''}${animate ? ' msg-enter' : ''}`;
@@ -1429,11 +1437,11 @@
       // propósito: hoje as duas expressões são a mesma coisa, mas `mine` é o
       // lado VISUAL da bolha e isto aqui é uma permissão. Se o critério de
       // lado mudar de novo, quem pode abrir mídia de visualização única tem
-      // que continuar preso à identidade real - m.sender === myName() - ou
-      // alguém veria a própria foto enviada como um "toque para ver" clicável
-      // e levaria um 403 sem explicação do servidor, que já recusa isso
-      // (ver server.js).
-      buildEphemeralLockedContent(bubble, m, m.sender === myName());
+      // que continuar preso à identidade real - sameName(m.sender, myName())
+      // - ou alguém veria a própria foto enviada como um "toque para ver"
+      // clicável e levaria um 403 sem explicação do servidor, que já recusa
+      // isso (ver server.js).
+      buildEphemeralLockedContent(bubble, m, sameName(m.sender, myName()));
     } else {
       if (m.replyTo) {
         const quote = document.createElement('div');
